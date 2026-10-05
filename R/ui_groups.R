@@ -6,17 +6,34 @@ ui_groups <- tabItem(
     tabName = "groups",
     h2(icon("users"), " Step 4: Select Group Columns & Categorize"),
 
-    # DE Method Banner — tells user which pipeline is active
+    # DE Method Banner - tells user which pipeline is active
     uiOutput("groups_de_method_banner"),
 
-    fluidRow(
-      box(
-        title = tags$span(icon("info-circle"), " About this step"),
-        width = 12, status = "info", solidHeader = TRUE, collapsible = TRUE, collapsed = FALSE,
-        tags$p(tags$strong("Purpose:"), " Define phenotype groups (e.g. control vs disease) for differential expression and WGCNA. Samples are assigned to groups using metadata columns from your datasets.", style = "margin-bottom: 8px;"),
-        tags$p(tags$strong("Disease-specific analysis:"), " Assign your condition groups to ", tags$strong("Disease"), " and controls to ", tags$strong("Normal"), ". Step 6 (DE) and Step 7 (WGCNA) will use these to find disease-associated genes and modules.", style = "margin-bottom: 8px; color: #2c3e50;"),
-        tags$p(tags$strong("Need both groups for DE:"), " Differential expression (Step 6) compares Normal vs Disease. You must have at least one sample in ", tags$strong("Normal"), " and one in ", tags$strong("Disease"), ". If you enter GSEs from the same sample source (e.g. same study with only one condition), you will not get DEGs until you add a dataset that contains the other condition.", style = "margin-bottom: 8px; color: #555;"),
-        tags$p(tags$strong("Workflow:"), " Browse the phenodata table below to understand your metadata, select the phenotype column per dataset, extract unique group labels, categorize each as Normal, Disease, or None, then apply.", style = "margin-bottom: 0;")
+    conditionalPanel(
+      condition = "input.analysis_type != 'parallel'",
+      fluidRow(
+        box(
+          title = tags$span(icon("info-circle"), " About this step"),
+          width = 12, status = "info", solidHeader = TRUE, collapsible = TRUE, collapsed = FALSE,
+          tags$p(tags$strong("Purpose:"), " Define phenotype groups (e.g. control vs disease) for differential expression and WGCNA. Samples are assigned to groups using metadata columns from your datasets.", style = "margin-bottom: 8px;"),
+          tags$p(tags$strong("Disease-specific analysis:"), " Assign your condition groups to ", tags$strong("Disease"), " and controls to ", tags$strong("Normal"), ". Step 6 (DE) and later steps will use these to find disease-associated genes and modules.", style = "margin-bottom: 8px; color: #2c3e50;"),
+          tags$p(tags$strong("Need both groups for DE:"), " Differential expression (Step 6) compares Normal vs Disease. You must have at least one sample in ", tags$strong("Normal"), " and one in ", tags$strong("Disease"), ". If you enter GSEs from the same sample source (e.g. same study with only one condition), you will not get DEGs until you add a dataset that contains the other condition.", style = "margin-bottom: 8px; color: #555;"),
+          tags$p(tags$strong("Workflow:"), " Browse the phenodata table below to understand your metadata, select the phenotype column per dataset, extract unique group labels, categorize each as Normal, Disease, or None, then apply.", style = "margin-bottom: 0;")
+        )
+      )
+    ),
+    conditionalPanel(
+      condition = "input.analysis_type == 'parallel'",
+      fluidRow(
+        box(
+          title = tags$span(icon("info-circle"), " About this step"),
+          width = 12, status = "info", solidHeader = TRUE, collapsible = TRUE, collapsed = FALSE,
+          tags$p(
+            tags$strong("Purpose:"),
+            " Assign Normal / Disease on RNA-seq (left) and microarray (right). One Apply writes Condition on both platforms so each DE can run.",
+            style = "margin-bottom: 0;"
+          )
+        )
       )
     ),
     fluidRow(
@@ -40,7 +57,7 @@ ui_groups <- tabItem(
     # ---- Phenodata Browser (full interactive table) ----
     fluidRow(
       box(
-        title = tags$span(icon("table"), " Phenodata Browser — Browse All Metadata Columns"),
+        title = tags$span(icon("table"), " Phenodata Browser - Browse All Metadata Columns"),
         width = 12, status = "success", solidHeader = TRUE, collapsible = TRUE, collapsed = FALSE,
         tags$div(
           style = "padding: 8px 0 4px 0;",
@@ -54,6 +71,27 @@ ui_groups <- tabItem(
       )
     ),
     
+    # ---- Group assignment method ----
+    fluidRow(
+      box(
+        title = tags$span(icon("hand-pointer"), " Group assignment method"),
+        width = 12, status = "info", solidHeader = TRUE,
+        radioButtons("group_assign_mode", NULL,
+          choices = c("By phenodata column (extract & categorize)" = "column",
+                      "Manual: tick samples in the phenodata tables above" = "manual"),
+          selected = "column", inline = TRUE),
+        conditionalPanel("input.group_assign_mode == 'manual'",
+          tags$p(icon("info-circle"),
+                 " Tick rows in each dataset's phenodata table (search boxes narrow the table; ",
+                 tags$strong("Tick all filtered rows"), " selects every match), then use ",
+                 tags$strong("Assign ticked"), " to put them in Normal or Disease. Unassigned samples are excluded. ",
+                 "Finish with ", tags$strong("Apply Categorization"), " below.",
+                 style = "font-size: 13px; color: #495057; margin: 0;")
+        )
+      )
+    ),
+
+    conditionalPanel("input.group_assign_mode != 'manual'",
     # ---- Column selector per dataset ----
     fluidRow(
       box(
@@ -83,6 +121,7 @@ ui_groups <- tabItem(
         width = 12, status = "success", solidHeader = TRUE,
         uiOutput("extracted_groups_ui")
       )
+    )
     ),
     
     fluidRow(
@@ -98,9 +137,8 @@ ui_groups <- tabItem(
         )
       )
     ),
-    
     fluidRow(
-      box(title = tags$span(icon("chart-pie"), " Group Summary"), 
+      box(title = tags$span(icon("chart-pie"), " Group Summary"),
           width = 12, status = "info", solidHeader = TRUE,
           uiOutput("group_summary_ui"))
     ),
@@ -110,11 +148,10 @@ ui_groups <- tabItem(
         width = 12, status = "info", solidHeader = TRUE, collapsible = TRUE, collapsed = TRUE,
         uiOutput("groups_process_summary_ui"))
     ),
+    gexp_ui_parallel_run_logs("groups_log_micro", "groups_log_rna"),
     fluidRow(
       box(width = 12, status = "info", solidHeader = FALSE,
           tags$div(class = "next-btn", style = "text-align: center; padding: 20px 0;",
-                   actionButton("next_page_groups", "Next: Batch Correction",
-                                icon = icon("arrow-right"), class = "btn-success btn-lg",
-                                style = "font-size: 18px; padding: 12px 30px; border-radius: 25px;")))
+                   uiOutput("groups_next_button_ui")))
     ),
   )

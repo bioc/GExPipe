@@ -6,6 +6,36 @@
 
 server_results_summary <- function(input, output, session, rv) {
 
+  # ---- Gene funnel: where do genes drop out of the pipeline? ----
+  output$results_summary_gene_funnel <- renderUI({
+    nrow_or_na <- function(x) if (is.data.frame(x)) nrow(x) else NA_integer_
+    len_or_na <- function(x) if (is.null(x)) NA_integer_ else length(x)
+    parallel <- isTRUE(rv$merge_after_de) || identical(rv$analysis_type, "parallel")
+    counts <- list(
+      de_rna = nrow_or_na(rv$sig_genes_rna), de_micro = nrow_or_na(rv$sig_genes_micro),
+      de_merged = if (isTRUE(rv$consensus_complete)) NA_integer_ else nrow_or_na(rv$sig_genes),
+      consensus = if (isTRUE(rv$consensus_complete)) nrow_or_na(rv$sig_genes) else NA_integer_,
+      common = len_or_na(rv$common_genes_de_wgcna), ml = len_or_na(rv$ml_common_genes),
+      roc_pass = if (is.null(rv$roc_n_pass)) NA_integer_ else rv$roc_n_pass,
+      roc_selected = len_or_na(rv$roc_selected_genes), nomogram = len_or_na(rv$nomogram_available_genes))
+    tab <- gexp_gene_funnel_table(counts, parallel = parallel)
+    if (all(tab$Status == "not run")) {
+      return(tags$p(style = "color:#7f8c8d;", icon("info-circle"), " Run the analysis steps to see how many genes survive each one."))
+    }
+    stop_row <- which(tab$Status == "STOPS HERE")[1L]
+    col <- c(ok = "#27ae60", `not run` = "#95a5a6", empty = "#e67e22", `STOPS HERE` = "#c0392b")
+    tagList(
+      if (!is.na(stop_row)) tags$div(class = "alert alert-danger", style = "font-size: 14px;",
+        icon("exclamation-triangle"), tags$strong(" No biomarker can be identified because genes drop to zero at: "), tab$Step[stop_row], ".",
+        tags$br(), tab$Hint[stop_row]),
+      tags$table(class = "table table-condensed", style = "font-size: 13px;",
+        tags$thead(tags$tr(tags$th("Step"), tags$th("Genes"), tags$th("Status"))),
+        tags$tbody(lapply(seq_len(nrow(tab)), function(i) tags$tr(
+          tags$td(tab$Step[i]), tags$td(tags$strong(if (is.na(tab$Genes[i])) "-" else format(tab$Genes[i], big.mark = ","))),
+          tags$td(tags$span(style = paste0("color:", col[[tab$Status[i]]], "; font-weight:600;"), tab$Status[i]))))))
+    )
+  })
+
   # Build narrative paragraph from rv (used by UI and PDF download; do not call output$ from downloadHandler)
   narrative_paragraph <- function() {
     expr <- rv$batch_corrected
@@ -39,7 +69,7 @@ server_results_summary <- function(input, output, session, rv) {
     thresh <- if (!is.null(rv$nomogram_optimal_threshold)) round(rv$nomogram_optimal_threshold, 3) else NA
 
     s1 <- sprintf("This analysis pipeline processed %s genes across %s samples. ", format(n_genes_expr, big.mark = ","), format(n_samp, big.mark = ","))
-    s2 <- if (norm_ok) "Normalization (Step 3) was applied; " else "Normalization was not run. "
+    s2 <- if (norm_ok) "Normalization (Step 2) was applied; " else "Normalization was not run. "
     s3 <- if (batch_ok) "batch correction (Step 5) was performed to reduce technical variation, as shown in the before/after PCA. " else "Batch correction was not run. "
     s4 <- sprintf("Differential expression (limma) identified %s significant genes (%s up-regulated, %s down-regulated), summarized in the volcano plot and top-gene heatmap. ", format(n_sig, big.mark = ","), format(n_up, big.mark = ","), format(n_down, big.mark = ","))
     s5 <- sprintf("WGCNA yielded %s significant modules; the soft-threshold plot, sample clustering tree, gene dendrogram, and module-trait heatmap are shown. ", format(n_mods, big.mark = ","))
@@ -47,7 +77,7 @@ server_results_summary <- function(input, output, session, rv) {
     s7 <- if (length(methods_run) > 0) sprintf("Machine learning (%s) was run; the Venn/UpSet plot shows overlap across methods, with %s genes common to all selected methods. ", paste(methods_run, collapse = ", "), format(n_ml, big.mark = ",")) else "Machine learning was not run. "
     s8 <- if (nomo_ok && !is.na(train_auc) && !is.na(val_auc)) sprintf("The diagnostic nomogram (70/30 split-sample validation) achieved training AUC %s and validation AUC %s (optimal threshold %s). ", train_auc, val_auc, thresh) else if (n_ml > 0) "ROC analysis (Step 11) and the diagnostic nomogram (Step 12) are available when run. "
     s9 <- sprintf("GSEA was performed for %s target gene(s). ", format(n_gsea, big.mark = ","))
-    s10 <- if (n_immune_samp > 0) sprintf("Immune cell deconvolution (%s) estimated proportions for %s cell types across %s samples. ", immune_meth, n_cells, format(n_immune_samp, big.mark = ",")) else "Immune deconvolution was not run. "
+    s10 <- if (n_immune_samp > 0) sprintf("Immune cell deconvolution (%s) estimated proportions for %s cell types across %s samples. ", immune_meth, n_cells, format(n_immune_samp, big.mark = ",")) else ""
 
     paste0(s1, s2, s3, s4, s5, s6, s7, s8, s9, s10)
   }
@@ -169,8 +199,8 @@ server_results_summary <- function(input, output, session, rv) {
   output$results_summary_norm_batch <- renderUI({
     norm_ok <- isTRUE(rv$normalization_complete)
     tags$div(
-      tags$p(tags$strong("Normalization:"), if (norm_ok) "Applied (Step 3)" else "Not run"),
-      if (!norm_ok) tags$p(style = "color: #7f8c8d;", "Complete Step 3 to see normalization here.")
+      tags$p(tags$strong("Normalization:"), if (norm_ok) "Applied (Step 2)" else "Not run"),
+      if (!norm_ok) tags$p(style = "color: #7f8c8d;", "Complete Step 2 to see normalization here.")
     )
   })
 

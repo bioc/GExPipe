@@ -9,6 +9,25 @@ ui_batch <- tabItem(
     # When only one dataset is selected, batch correction is skipped automatically.
     uiOutput("batch_merged_platform_ui"),
     uiOutput("batch_single_dataset_ui"),
+    conditionalPanel(
+      condition = "input.analysis_type == 'parallel'",
+      fluidRow(
+        box(
+          title = tags$span(icon("info-circle"), " About this step"),
+          width = 12, status = "info", solidHeader = TRUE, collapsible = TRUE, collapsed = FALSE,
+          tags$p(
+            tags$strong("Purpose:"),
+            " Batch-correct RNA-seq (left) and microarray (right) on their own matrices. No joint ComBat and no gene intersection.",
+            style = "margin-bottom: 8px;"
+          ),
+          tags$p(
+            tags$strong("Methods:"),
+            " Auto picks the usual method per platform (microarray: ComBat-ref; RNA-seq: limma if DESeq2/edgeR/voom, ComBat-ref if limma). One Apply runs both. A platform with one GSE is filtered only.",
+            style = "margin-bottom: 0;"
+          )
+        )
+      )
+    ),
 
     fluidRow(
       box(
@@ -22,16 +41,40 @@ ui_batch <- tabItem(
       )
     ),
     
-    fluidRow(
-      box(title = tags$span(icon("chart-bar"), " Gene Variance Distribution"), 
+    conditionalPanel(
+      condition = "input.analysis_type == 'parallel'",
+      gexp_ui_parallel_two_col(
+        box(
+          title = tags$span(icon("chart-bar"), " RNA-seq gene variance"),
+          width = 12, status = "warning", solidHeader = TRUE,
+          plotOutput("gene_variance_plot_rna", height = "300px"),
+          gexp_ui_plot_download_bar("download_gene_variance_plot_rna_png", "download_gene_variance_plot_rna_jpg", "download_gene_variance_plot_rna_pdf", "btn-warning btn-xs")
+        ),
+        box(
+          title = tags$span(icon("chart-bar"), " Microarray gene variance"),
+          width = 12, status = "warning", solidHeader = TRUE,
+          plotOutput("gene_variance_plot_micro", height = "300px"),
+          gexp_ui_plot_download_bar("download_gene_variance_plot_micro_png", "download_gene_variance_plot_micro_jpg", "download_gene_variance_plot_micro_pdf", "btn-warning btn-xs")
+        )
+      )
+    ),
+    conditionalPanel(
+      condition = "input.analysis_type != 'parallel'",
+      fluidRow(
+        box(
+          title = tags$span(icon("chart-bar"), " Gene Variance Distribution"),
           width = 12, status = "warning", solidHeader = TRUE,
           plotOutput("gene_variance_plot", height = "300px"),
-          tags$div(style = "margin-top: 6px;",
+          tags$div(
+            style = "margin-top: 6px;",
             downloadButton("download_gene_variance_png", tagList(icon("download"), " PNG"), class = "btn-warning btn-sm", style = "margin-right: 4px;"),
             downloadButton("download_gene_variance_jpg", tagList(icon("download"), " JPG"), class = "btn-warning btn-sm", style = "margin-right: 4px;"),
-            downloadButton("download_gene_variance_pdf", tagList(icon("download"), " PDF"), class = "btn-warning btn-sm"))
+            downloadButton("download_gene_variance_pdf", tagList(icon("download"), " PDF"), class = "btn-warning btn-sm")
+          )
+        )
+      )
     ),
-    
+
     fluidRow(
       box(
         title = tags$span(icon("filter"), " Gene Filtering - Remove Low Variance Genes"), 
@@ -40,49 +83,93 @@ ui_batch <- tabItem(
           style = "padding: 15px 0;",
           fluidRow(
             column(6,
-                   tags$div(
-                     style = "padding-right: 15px;",
-                     tags$label(
-                       tags$strong(icon("sliders-h"), " Variance Percentile Cutoff:"),
-                       tags$i(class = "fa fa-question-circle param-help",
-                              `data-toggle` = "tooltip", `data-placement` = "right",
-                              title = "Remove genes with the lowest expression variance across samples. These low-variance genes add noise without contributing to differential analysis.<br><b>25%</b> = moderate (removes bottom quarter), <b>10%</b> = conservative, <b>40%</b> = aggressive filtering."),
-                       style = "font-size: 16px; color: #2c3e50; margin-bottom: 10px; display: block;"
-                     ),
-                     tags$p(
-                       "Select the percentile below which genes will be filtered out.",
-                       style = "color: #6c757d; font-size: 13px; margin-bottom: 15px;"
-                     ),
-                     sliderInput("variance_percentile",
-                                 label = NULL,
-                                 min = 0,
-                                 max = 50,
-                                 value = 25,
-                                 step = 1,
-                                 post = "%",
-                                 width = "100%"),
+                   conditionalPanel(
+                     condition = "input.analysis_type != 'parallel'",
                      tags$div(
-                       style = "margin-top: 10px; padding: 12px; background: #e8f4f8; border-left: 4px solid #3498db; border-radius: 5px;",
-                       tags$div(
-                         style = "display: flex; justify-content: space-between; align-items: center;",
-                         tags$span(
-                           tags$strong("Genes to keep: "),
-                           tags$span(textOutput("genes_to_keep", inline = TRUE), 
-                                    style = "color: #3498db; font-weight: bold; font-size: 16px;")
-                         ),
-                         tags$span(
-                           tags$strong("Genes to remove: "),
-                           tags$span(textOutput("genes_to_remove", inline = TRUE), 
-                                    style = "color: #e74c3c; font-weight: bold; font-size: 16px;")
-                         )
+                       style = "padding-right: 15px;",
+                       tags$label(
+                         tags$strong(icon("sliders-h"), " Variance Percentile Cutoff:"),
+                         tags$i(class = "fa fa-question-circle param-help",
+                                `data-toggle` = "tooltip", `data-placement` = "right",
+                                title = "Remove genes with the lowest expression variance across samples. These low-variance genes add noise without contributing to differential analysis.<br><b>25%</b> = moderate (removes bottom quarter), <b>10%</b> = conservative, <b>40%</b> = aggressive filtering."),
+                         style = "font-size: 16px; color: #2c3e50; margin-bottom: 10px; display: block;"
                        ),
+                       tags$p(
+                         "Select the percentile below which genes will be filtered out.",
+                         style = "color: #6c757d; font-size: 13px; margin-bottom: 15px;"
+                       ),
+                       sliderInput("variance_percentile",
+                                   label = NULL,
+                                   min = 0,
+                                   max = 50,
+                                   value = 25,
+                                   step = 1,
+                                   post = "%",
+                                   width = "100%"),
                        tags$div(
-                         style = "margin-top: 8px; padding-top: 8px; border-top: 1px solid #b8daff;",
-                         tags$small(
-                           icon("info-circle", style = "margin-right: 5px;"),
-                           textOutput("filter_info", inline = TRUE),
-                           style = "color: #495057;"
+                         style = "margin-top: 10px; padding: 12px; background: #e8f4f8; border-left: 4px solid #3498db; border-radius: 5px;",
+                         tags$div(
+                           style = "display: flex; justify-content: space-between; align-items: center;",
+                           tags$span(
+                             tags$strong("Genes to keep: "),
+                             tags$span(textOutput("genes_to_keep", inline = TRUE),
+                                      style = "color: #3498db; font-weight: bold; font-size: 16px;")
+                           ),
+                           tags$span(
+                             tags$strong("Genes to remove: "),
+                             tags$span(textOutput("genes_to_remove", inline = TRUE),
+                                      style = "color: #e74c3c; font-weight: bold; font-size: 16px;")
+                           )
+                         ),
+                         tags$div(
+                           style = "margin-top: 8px; padding-top: 8px; border-top: 1px solid #b8daff;",
+                           tags$small(
+                             icon("info-circle", style = "margin-right: 5px;"),
+                             textOutput("filter_info", inline = TRUE),
+                             style = "color: #495057;"
+                           )
                          )
+                       )
+                     )
+                   ),
+                   conditionalPanel(
+                     condition = "input.analysis_type == 'parallel'",
+                     tags$div(
+                       style = "padding-right: 15px;",
+                       tags$label(
+                         tags$strong(icon("sliders-h"), " Variance Percentile Cutoff (per platform):"),
+                         tags$i(class = "fa fa-question-circle param-help",
+                                `data-toggle` = "tooltip", `data-placement` = "right",
+                                title = "Remove genes with the lowest expression variance across samples. Each platform is filtered on its own gene set, so RNA-seq and microarray can use different cutoffs."),
+                         style = "font-size: 16px; color: #2c3e50; margin-bottom: 10px; display: block;"
+                       ),
+                       tags$p("RNA-seq:", style = "color: #6c757d; font-size: 13px; margin-bottom: 4px; font-weight: bold;"),
+                       sliderInput("variance_percentile_rna",
+                                   label = NULL,
+                                   min = 0,
+                                   max = 50,
+                                   value = 25,
+                                   step = 1,
+                                   post = "%",
+                                   width = "100%"),
+                       tags$div(
+                         style = "margin-bottom: 15px; padding: 10px 12px; background: #e8f4f8; border-left: 4px solid #3498db; border-radius: 5px;",
+                         tags$span(tags$strong("Keep: "), tags$span(textOutput("genes_to_keep_rna", inline = TRUE), style = "color: #3498db; font-weight: bold;")),
+                         tags$span(" | ", tags$strong("Remove: "), tags$span(textOutput("genes_to_remove_rna", inline = TRUE), style = "color: #e74c3c; font-weight: bold;"))
+                       ),
+                       tags$p("Microarray:", style = "color: #6c757d; font-size: 13px; margin-bottom: 4px; font-weight: bold;"),
+                       sliderInput("variance_percentile_micro",
+                                   label = NULL,
+                                   min = 0,
+                                   max = 50,
+                                   value = 25,
+                                   step = 1,
+                                   post = "%",
+                                   width = "100%"),
+                       tags$div(
+                         style = "padding: 10px 12px; background: #fdf1e3; border-left: 4px solid #e67e22; border-radius: 5px;",
+                         tags$span(tags$strong("Keep: "), tags$span(textOutput("genes_to_keep_micro", inline = TRUE), style = "color: #e67e22; font-weight: bold;")),
+                         tags$span(" | ", tags$strong("Remove: "), tags$span(textOutput("genes_to_remove_micro", inline = TRUE), style = "color: #e74c3c; font-weight: bold;"))
                        )
                      )
                    )
@@ -90,6 +177,9 @@ ui_batch <- tabItem(
             column(6,
                    tags$div(
                      style = "padding-left: 15px;",
+                     conditionalPanel(
+                       condition = "input.analysis_type != 'parallel'",
+                       tagList(
                      tags$label(
                        tags$strong(icon("magic"), " Batch Correction Method:"),
                        tags$i(class = "fa fa-question-circle param-help",
@@ -112,7 +202,82 @@ ui_batch <- tabItem(
                                     selected = "combat_ref",
                                     width = "100%")
                      ),
-                     uiOutput("batch_method_guidance_ui"),
+                     uiOutput("batch_method_guidance_ui")
+                       )
+                     ),
+                     conditionalPanel(
+                       condition = "input.analysis_type == 'parallel'",
+                       tagList(
+                         tags$label(
+                           tags$strong(icon("magic"), " Parallel batch methods:"),
+                           style = "font-size: 16px; color: #2c3e50; margin-bottom: 8px; display: block;"
+                         ),
+                         radioButtons(
+                           "batch_mode_parallel",
+                           label = NULL,
+                           choices = c(
+                             "Auto (recommended) - best method chosen for each platform" = "auto",
+                             "Manual - choose each platform separately" = "manual",
+                             "Same method for both platforms" = "same"
+                           ),
+                           selected = "auto",
+                           inline = TRUE
+                         ),
+                         uiOutput("batch_parallel_guide_ui"),
+                         conditionalPanel(
+                           condition = "input.batch_mode_parallel == 'same'",
+                           selectInput(
+                             "batch_method_same",
+                             "Method applied to RNA-seq and microarray (each corrected on its own samples):",
+                             choices = c(
+                               "ComBat-ref" = "combat_ref",
+                               "limma removeBatchEffect" = "limma",
+                               "ComBat" = "combat",
+                               "SVA (surrogate variables)" = "sva"
+                             ),
+                             selected = "combat_ref",
+                             width = "100%"
+                           )
+                         ),
+                         conditionalPanel(
+                           condition = "input.batch_mode_parallel == 'manual'",
+                           gexp_ui_parallel_two_col(
+                             tags$div(
+                               tags$label("RNA-seq:", style = "font-weight: bold;"),
+                               radioButtons(
+                                 "batch_method_rna",
+                                 label = NULL,
+                                 choices = list(
+                                   "limma removeBatchEffect (count DE)" = "limma",
+                                   "ComBat-ref (limma DE / multi-GSE log)" = "combat_ref",
+                                   "SVA" = "sva",
+                                   "ComBat" = "combat"
+                                 ),
+                                 selected = "limma",
+                                 width = "100%"
+                               )
+                             ),
+                             tags$div(
+                               tags$label("Microarray:", style = "font-weight: bold;"),
+                               radioButtons(
+                                 "batch_method_micro",
+                                 label = NULL,
+                                 choices = list(
+                                   "ComBat-ref (recommended)" = "combat_ref",
+                                   "limma removeBatchEffect" = "limma",
+                                   "Quantile + limma" = "quantile_limma",
+                                   "Hybrid (quantile + ComBat)" = "hybrid",
+                                   "ComBat" = "combat",
+                                   "SVA" = "sva"
+                                 ),
+                                 selected = "combat_ref",
+                                 width = "100%"
+                               )
+                             )
+                           )
+                         )
+                       )
+                     ),
                      tags$div(
                        class = "alert alert-warning",
                        style = "margin: 10px 0 0 0; font-size: 12px; line-height: 1.55;",
@@ -141,6 +306,8 @@ ui_batch <- tabItem(
                    )
             )
           ),
+          conditionalPanel(
+            condition = "input.analysis_type != 'parallel'",
           tags$div(
             style = "margin-top: 20px; padding: 15px; background: #f8f9fa; border-left: 4px solid #3498db; border-radius: 5px;",
             tags$p(
@@ -209,13 +376,42 @@ ui_batch <- tabItem(
               tags$li(tags$strong("Hybrid:"), " Quantile normalization followed by ComBat.")
             )
           )
+          )
         )
       )
     ),
-    
+
+    conditionalPanel(
+      condition = "input.analysis_type == 'parallel'",
+      gexp_ui_parallel_two_col(
+        tagList(
+          box(
+            title = tags$span(icon("chart-line"), " RNA-seq PCA (before / after)"),
+            width = 12, status = "info", solidHeader = TRUE,
+            plotOutput("pca_before_dataset_rna", height = "280px"),
+            gexp_ui_plot_download_bar("download_pca_before_dataset_rna_png", "download_pca_before_dataset_rna_jpg", "download_pca_before_dataset_rna_pdf", "btn-info btn-xs"),
+            plotOutput("pca_after_dataset_rna", height = "280px"),
+            gexp_ui_plot_download_bar("download_pca_after_dataset_rna_png", "download_pca_after_dataset_rna_jpg", "download_pca_after_dataset_rna_pdf", "btn-info btn-xs")
+          )
+        ),
+        tagList(
+          box(
+            title = tags$span(icon("chart-line"), " Microarray PCA (before / after)"),
+            width = 12, status = "warning", solidHeader = TRUE,
+            plotOutput("pca_before_dataset_micro", height = "280px"),
+            gexp_ui_plot_download_bar("download_pca_before_dataset_micro_png", "download_pca_before_dataset_micro_jpg", "download_pca_before_dataset_micro_pdf", "btn-warning btn-xs"),
+            plotOutput("pca_after_dataset_micro", height = "280px"),
+            gexp_ui_plot_download_bar("download_pca_after_dataset_micro_png", "download_pca_after_dataset_micro_jpg", "download_pca_after_dataset_micro_pdf", "btn-warning btn-xs")
+          )
+        )
+      )
+    ),
+
+    conditionalPanel(
+      condition = "input.analysis_type != 'parallel'",
     fluidRow(
       box(
-        title = tags$span(icon("chart-line"), " PCA Visualization - Batch Effect Assessment"), 
+        title = tags$span(icon("chart-line"), " PCA Visualization - Batch Effect Assessment"),
         width = 12, status = "primary", solidHeader = TRUE,
         tags$div(
           style = "padding: 10px 0; margin-bottom: 15px;",
@@ -330,6 +526,7 @@ ui_batch <- tabItem(
           )
         )
       )
+    )
     ),
     
     fluidRow(
@@ -353,7 +550,7 @@ ui_batch <- tabItem(
         width = 12, status = "info", solidHeader = TRUE, collapsible = TRUE, collapsed = TRUE,
         tags$div(
           id = "batch_summary_panel",
-          verbatimTextOutput("batch_log"),
+          gexp_ui_log_box("batch_log"),
           tags$div(
             class = "step-timer",
             tags$span(class = "label", "Elapsed:"),
@@ -367,11 +564,31 @@ ui_batch <- tabItem(
         title = tags$span(icon("file-csv"), " Download expression data (batch step)"),
         width = 12, status = "warning", solidHeader = TRUE,
         tags$p("Export expression before and after batch correction to verify the pipeline in R, Excel, or other tools.", style = "margin-bottom: 12px; color: #555;"),
-        fluidRow(
-          column(6,
-            downloadButton("download_expr_before_batch", tagList(icon("download"), " Before batch (expression CSV)"), class = "btn-warning btn-block")),
-          column(6,
-            downloadButton("download_expr_after_batch", tagList(icon("download"), " After batch (expression CSV)"), class = "btn-success btn-block"))
+        conditionalPanel(
+          condition = "input.analysis_type != 'parallel'",
+          fluidRow(
+            column(6,
+              downloadButton("download_expr_before_batch", tagList(icon("download"), " Before batch (expression CSV)"), class = "btn-warning btn-block")),
+            column(6,
+              downloadButton("download_expr_after_batch", tagList(icon("download"), " After batch (expression CSV)"), class = "btn-success btn-block"))
+          )
+        ),
+        conditionalPanel(
+          condition = "input.analysis_type == 'parallel'",
+          tags$p(style = "color:#555; font-size:13px;", icon("info-circle"),
+                 " Parallel mode corrects each platform separately, so each platform has its own before and after file (own gene set, no merging)."),
+          fluidRow(
+            column(6,
+              tags$h5(icon("dna"), " RNA-seq", style = "font-weight:bold;"),
+              downloadButton("download_expr_before_batch_rna", tagList(icon("download"), " RNA-seq before batch (CSV)"), class = "btn-warning btn-block"),
+              tags$div(style = "height:8px;"),
+              downloadButton("download_expr_after_batch_rna", tagList(icon("download"), " RNA-seq after batch (CSV)"), class = "btn-success btn-block")),
+            column(6,
+              tags$h5(icon("th"), " Microarray", style = "font-weight:bold;"),
+              downloadButton("download_expr_before_batch_micro", tagList(icon("download"), " Microarray before batch (CSV)"), class = "btn-warning btn-block"),
+              tags$div(style = "height:8px;"),
+              downloadButton("download_expr_after_batch_micro", tagList(icon("download"), " Microarray after batch (CSV)"), class = "btn-success btn-block"))
+          )
         )
       )
     ),
@@ -381,11 +598,6 @@ ui_batch <- tabItem(
         width = 12, status = "info", solidHeader = TRUE, collapsible = TRUE, collapsed = TRUE,
         uiOutput("batch_process_summary_ui"))
     ),
-    fluidRow(
-      box(width = 12, status = "info", solidHeader = FALSE,
-          tags$div(class = "next-btn", style = "text-align: center; padding: 20px 0;",
-                   actionButton("next_page_batch", "Next: Differential Expression",
-                                icon = icon("arrow-right"), class = "btn-success btn-lg",
-                                style = "font-size: 18px; padding: 12px 30px; border-radius: 25px;"))))
-    ),
+    gexp_ui_parallel_run_logs("batch_log_micro", "batch_log_rna"),
+    gexp_ui_next_tab_button("next_page_batch_end", "Next: Differential Expression")
   )

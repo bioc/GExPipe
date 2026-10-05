@@ -39,6 +39,36 @@ gexpipe_has_mixed_platforms <- function(metadata) {
   "Microarray" %in% plats && "RNAseq" %in% plats
 }
 
+#' Sample IDs for one platform in unified metadata
+#'
+#' @param metadata data.frame with a `Platform` column and sample IDs as
+#'   row names (or a `SampleID` column).
+#' @param platform `"Microarray"` or `"RNAseq"`.
+#' @return Character vector of sample IDs (may be empty).
+#' @examples
+#' meta <- data.frame(
+#'   Platform = c("Microarray", "RNAseq"),
+#'   row.names = c("S1", "S2")
+#' )
+#' gexpipe_platform_sample_ids(meta, "RNAseq")
+#' @export
+gexpipe_platform_sample_ids <- function(metadata, platform = c("Microarray", "RNAseq")) {
+  platform <- match.arg(platform)
+  if (is.null(metadata) || nrow(metadata) < 1L || !"Platform" %in% colnames(metadata)) {
+    return(character(0))
+  }
+  keep <- as.character(metadata$Platform) == platform
+  ids <- rownames(metadata)
+  if (is.null(ids) || any(!nzchar(ids))) {
+    if ("SampleID" %in% colnames(metadata)) {
+      ids <- as.character(metadata$SampleID)
+    } else {
+      return(character(0))
+    }
+  }
+  as.character(ids[keep & !is.na(keep)])
+}
+
 #' Test whether Platform is not estimable alongside Dataset
 #'
 #' Returns TRUE when Platform is nested within Dataset (each GSE has one technology)
@@ -105,7 +135,25 @@ gexpipe_batch_covariate_info <- function(metadata) {
 
 .gexpipe_factor_meta <- function(meta, cols = c("Condition", "Platform", "Dataset")) {
   if ("Condition" %in% cols && "Condition" %in% colnames(meta)) {
-    meta$Condition <- factor(meta$Condition, levels = c("Normal", "Disease"))
+    # Group names may have been renamed away from "Normal"/"Disease" in
+    # Step 4 (e.g. "Control"/"Chronic myeloid leukemia"). Re-leveling with
+    # the literal default names when the data no longer contains them turns
+    # every Condition value NA, which silently destroys the design matrix
+    # (DESeq2/edgeR/limma then have no groups to fit, and independent
+    # filtering removes every gene). If Condition is already a leveled
+    # factor (the normal case - set correctly upstream with the current
+    # reference/comparison labels), keep its existing levels as-is;
+    # otherwise derive levels from whatever values are actually present.
+    if (is.factor(meta$Condition)) {
+      meta$Condition <- factor(as.character(meta$Condition), levels = levels(meta$Condition))
+    } else {
+      cond_chr <- as.character(meta$Condition)
+      cond_lvls <- unique(cond_chr[!is.na(cond_chr) & nzchar(cond_chr)])
+      if (setequal(cond_lvls, c("Normal", "Disease"))) {
+        cond_lvls <- c("Normal", "Disease")
+      }
+      meta$Condition <- factor(cond_chr, levels = cond_lvls)
+    }
   }
   if ("Platform" %in% cols && "Platform" %in% colnames(meta)) {
     meta$Platform <- factor(meta$Platform)
@@ -239,6 +287,10 @@ gexpipe_deseq2_design <- function(metadata) {
 #' @export
 gexpipe_pca_polar_df <- function(expr, metadata, color_by = "Dataset") {
   metadata <- .gexpipe_align_metadata_to_expr(expr, metadata)
+  ok <- rowSums(is.finite(expr)) == ncol(expr)
+  if (sum(ok) >= 10L) {
+    expr <- expr[ok, , drop = FALSE]
+  }
   pca <- stats::prcomp(t(expr), scale. = TRUE)
   pc1 <- pca$x[, 1]
   pc2 <- pca$x[, 2]
@@ -290,7 +342,8 @@ gexpipe_pvca_df <- function(expr, metadata, max_samples = 100L, max_pcs = 10L) {
   }
   metadata <- .gexpipe_align_metadata_to_expr(expr, metadata)
 
-  gene_ok <- rowSums(is.finite(expr)) >= 2L
+  complete <- rowSums(is.finite(expr)) == ncol(expr)
+  gene_ok <- if (sum(complete) >= 20L) complete else rowSums(is.finite(expr)) >= 2L
   expr <- expr[gene_ok, , drop = FALSE]
   if (nrow(expr) < 2L) {
     return(list(
@@ -412,12 +465,13 @@ gexpipe_batch_confounding_summary <- function(metadata) {
   if (!all(c("Dataset", "Condition") %in% colnames(metadata))) {
     return(list(confounded = FALSE, table = NULL, message = "Assign Dataset and Condition to assess confounding."))
   }
-  meta <- metadata[
-    !is.na(metadata$Condition) & metadata$Condition %in% c("Normal", "Disease"),
-    , drop = FALSE
-  ]
-  if (nrow(meta) < 2L) {
-    return(list(confounded = FALSE, table = NULL, message = "Label Normal/Disease samples in Step 4 first."))
+  # Accept whatever two group labels are actually in use (Step 4 may have
+  # renamed "Normal"/"Disease" to custom names) rather than hardcoding them.
+  cond_chr <- as.character(metadata$Condition)
+  valid_labels <- unique(cond_chr[!is.na(cond_chr) & nzchar(cond_chr) & cond_chr != "None"])
+  meta <- metadata[!is.na(metadata$Condition) & cond_chr %in% valid_labels, , drop = FALSE]
+  if (nrow(meta) < 2L || length(valid_labels) < 2L) {
+    return(list(confounded = FALSE, table = NULL, message = "Label both groups in Step 4 first."))
   }
   tbl <- table(meta$Dataset, meta$Condition)
   confounded <- nrow(tbl) > 1L && ncol(tbl) > 1L && any(tbl == 0L)

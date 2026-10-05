@@ -1,11 +1,26 @@
 .claude/
 .cursoragent
+.cursorignore
 .Rproj.user
 .Rhistory
 .Rapp.history
 .RData
 .RDataTmp
 .Ruserdata
+
+# Session scratch/debug files (not part of the package)
+.tmp_*.out
+tmp_*.md
+tmp_*.py
+tmp_*.R
+tmp_*.txt
+tmp_*.log
+tmp_*.html
+restart_gexpipe_fixed.R
+GPIPE/
+devel
+enrich_fix_wip/
+tmp_*/
 
 # Local installed-version snapshot (machine-specific; not for GitHub)
 inst/pkg_versions_installed.local.txt
@@ -31,7 +46,12 @@ app/
 inst/shinyapp/rna_data/
 rna_data/
 inst/shinyapp/ext_val_rna/
+inst/shinyapp/ext_val_micro/
 inst/shinyapp/csv_exports/
+
+# Local validation/benchmark scratch (large raw downloads, not part of the
+# package or the GitHub source - some files here exceed GitHub's 100MB limit)
+validation_manual/
 
 # GEO platform annotation caches (can be >1 GB)
 inst/shinyapp/*.soft.gz

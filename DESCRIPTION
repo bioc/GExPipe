@@ -1,6 +1,6 @@
 Package: GExPipe
 Title: GExPipe: Gene Expression Pipeline Shiny Application
-Version: 0.99.51
+Version: 0.99.107
 Authors@R: c(
     person(
         given = "Safa",
@@ -23,14 +23,17 @@ Authors@R: c(
     )
     )
 Description: Shiny application (GExPipe) for high-throughput genomic analysis of bulk RNA-seq and
-    microarray data (e.g. from GEO). Integrates with Bioconductor (GEOquery, Biobase,
-    limma, DESeq2, edgeR, clusterProfiler) for a single workflow: download, QC,
+    microarray data (e.g. from GEO). Four analysis types: RNA-seq only, microarray only,
+    Merged (Both) (per-dataset normalize then one joint batch and limma DE), and Parallel DE
+    then merge (separate pipelines through DE, then RNA-seq intersect microarray). Each
+    RNA-seq and microarray box accepts one or more GSE IDs in the same run. Integrates with
+    Bioconductor (GEOquery, Biobase, limma, DESeq2, edgeR, clusterProfiler) for download, QC,
     normalization, batch correction, differential expression, WGCNA, pathway enrichment,
-    PPI, and machine learning. Uses common data structures
-    (ExpressionSet, DGEList) for interoperability. For a full dependency tree (including
-    STRINGdb + PPI helpers), use BiocManager::install("GExPipe", dependencies = TRUE).
-    STRING data are downloaded on first PPI use (internet required); they cannot be bundled in the package.
-    Microarray CEL normalization uses affy and/or oligo when supplementary CEL files are available.
+    PPI, and machine learning. Uses common data structures (ExpressionSet, DGEList) for
+    interoperability. For a full dependency tree (including STRINGdb + PPI helpers), use
+    BiocManager::install("GExPipe", dependencies = TRUE). STRING data are downloaded on first
+    PPI use (internet required); they cannot be bundled in the package. Microarray CEL
+    normalization uses affy and/or oligo when supplementary CEL files are available.
 License: MIT + file LICENSE
 Encoding: UTF-8
 Depends: R (>= 4.6.0)
@@ -43,6 +46,7 @@ Imports:
     affy (>= 1.84.0),
     AnnotationDbi (>= 1.64.0),
     Biobase (>= 2.62.0),
+    BiocGenerics,
     biomaRt (>= 2.58.0),
     caret (>= 6.0.94),
     circlize (>= 0.4.16),
@@ -66,6 +70,7 @@ Imports:
     igraph (>= 2.0.0),
     lifecycle (>= 1.0.0),
     limma (>= 3.58.0),
+    logistf (>= 1.26.0),
     Matrix (>= 1.6.0),
     msigdbr (>= 7.5.1),
     oligo (>= 1.66.0),
@@ -87,6 +92,7 @@ Imports:
     shinydashboard (>= 0.7.2),
     shinyjs (>= 2.1.0),
     STRINGdb (>= 2.14.0),
+    SummarizedExperiment (>= 1.32.0),
     sva (>= 3.50.0),
     tibble (>= 3.2.0),
     tidyr (>= 1.3.0),
@@ -121,6 +127,8 @@ Suggests:
     rmarkdown,
     remotes,
     SHAPforxgboost (>= 0.1.0),
+    curl,
+    httpuv,
     shinytest2,
     stringi,
     testthat

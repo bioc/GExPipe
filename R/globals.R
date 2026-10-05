@@ -2,7 +2,7 @@
 # Shiny attach happens at app runtime via gexp_app_attach_packages().
 utils::globalVariables(c(
   # NSE / ggplot aesthetic columns
-  ".data", "AUC", "After", "Before", "Condition", "Connectivity", "Correlation",
+  ".data", "ylab", "label", "AUC", "After", "Before", "Condition", "Connectivity", "Correlation",
   "Count", "Dataset", "Description", "Direction", "Disease", "Expression",
   "Factor", "GS_trait", "Gene", "Group", "IsOutlier", "Kept", "Label",
   "ME1", "ME2", "MM", "Mean", "Module", "N", "Normal", "Observed", "Outcome",
@@ -16,7 +16,7 @@ utils::globalVariables(c(
   "renderImage", "renderInfoBox", "renderDataTable", "downloadHandler",
   "observe", "observeEvent", "req", "invalidateLater", "showNotification",
   "removeNotification", "withProgress", "incProgress", "reactive", "eventReactive",
-  "reactiveVal", "reactiveValues", "validate", "need",
+  "reactiveVal", "reactiveValues", "validate", "need", "isolate",
   "updateRadioButtons", "updateSelectInput", "updateTextInput",
   "updateCheckboxInput", "updateCheckboxGroupInput", "updateSliderInput",
   "updateNumericInput", "updateActionButton", "updateTabItems",

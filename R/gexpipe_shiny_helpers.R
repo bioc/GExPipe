@@ -101,6 +101,43 @@ gexp_ui_plot_download_bar <- function(png_id, jpg_id, pdf_id, btn_class = "btn-s
   )
 }
 
+#' Standard dark-terminal log box, used for every step's processing log.
+#' One shared component so every step's log looks the same (background,
+#' font, timestamp handling) instead of each step styling its own.
+#' @param output_id Shiny output id for the log text (a renderText/
+#'   renderPrint producing already-formatted, newline-joined text).
+#' @param height CSS max-height for the scrollable area.
+#' @noRd
+gexp_ui_log_box <- function(output_id, height = "500px") {
+  shiny::tags$div(
+    class = "scrollable-log-area gexp-log-box",
+    style = paste0(
+      "max-height: ", height, "; overflow-y: auto; font-family: 'Courier New', monospace; ",
+      "font-size: 12px; background: #263238; color: #66BB6A; padding: 15px; ",
+      "border-radius: 8px; white-space: pre-wrap;"
+    ),
+    shiny::verbatimTextOutput(output_id, placeholder = TRUE)
+  )
+}
+
+#' Build a consistently-formatted closing summary block, appended to the end
+#' of every step's log text so every step ends the same way. `lines` is a
+#' named character/numeric vector (or list) of label -> value pairs.
+#' @noRd
+gexpipe_log_summary_block <- function(title, lines) {
+  rule <- paste(rep("━", 48), collapse = "")
+  body <- vapply(names(lines), function(nm) {
+    sprintf("  %s: %s", nm, format(lines[[nm]]))
+  }, character(1))
+  paste0(
+    "\n", rule, "\n",
+    "SUMMARY: ", title, "\n",
+    rule, "\n",
+    paste(body, collapse = "\n"), "\n",
+    rule, "\n"
+  )
+}
+
 # Open a graphics device for plot export (png/jpg/pdf inferred from file extension).
 gexp_plot_device_open <- function(file, width, height, bg = "white", type = NULL) {
   if (is.null(type)) {
@@ -124,6 +161,68 @@ gexp_ggsave_from_file <- function(file, plot, width, height, dpi = IMAGE_DPI) {
   ext <- tolower(sub(".*\\.", "", basename(file)))
   device <- if (ext %in% c("jpg", "jpeg")) "jpeg" else if (ext == "pdf") "pdf" else "png"
   ggplot2::ggsave(file, plot = plot, width = width, height = height, dpi = dpi, units = "in", bg = "white", device = device)
+  invisible(NULL)
+}
+
+#' Register PNG/JPG/PDF downloadHandlers for a base-graphics plot function in
+#' one call, so a parallel-mode (RNA-seq/Microarray) plot gets the same three
+#' download buttons a merged-mode plot already has, without hand-writing
+#' three near-identical downloadHandler blocks per plot.
+#' @param output The Shiny `output` object of the calling server function.
+#' @param id_stem Output id stem; registers output[[paste0("download_", id_stem, "_png")]] etc.
+#' @param plot_fn Zero-arg function that draws the plot to the currently open device.
+#' @param width,height Plot size in inches.
+#' @param filename_prefix Downloaded file basename (without extension).
+#' @param csv_dir Optional directory (e.g. CSV_EXPORT_DIR()) to also save a copy into, matching the app's "also save to export dir" convention used elsewhere.
+#' @noRd
+gexp_register_plot_downloads <- function(output, id_stem, plot_fn, width, height, filename_prefix, csv_dir = NULL) {
+  make_handler <- function(ext) {
+    shiny::downloadHandler(
+      filename = function() paste0(filename_prefix, ".", ext),
+      content = function(file) {
+        gexp_plot_device_open(file, width = width, height = height, type = ext)
+        on.exit(grDevices::dev.off(), add = TRUE)
+        plot_fn()
+        if (!is.null(csv_dir)) {
+          dir_val <- if (is.function(csv_dir)) csv_dir() else csv_dir
+          if (!is.null(dir_val) && nzchar(dir_val)) {
+            copy_path <- file.path(dir_val, paste0(filename_prefix, ".", ext))
+            try(file.copy(file, copy_path, overwrite = TRUE), silent = TRUE)
+          }
+        }
+      }
+    )
+  }
+  output[[paste0("download_", id_stem, "_png")]] <- make_handler("png")
+  output[[paste0("download_", id_stem, "_jpg")]] <- make_handler("jpg")
+  output[[paste0("download_", id_stem, "_pdf")]] <- make_handler("pdf")
+  invisible(NULL)
+}
+
+#' Same as gexp_register_plot_downloads(), but for a zero-arg function that
+#' RETURNS a ggplot object (saved via ggsave) instead of drawing directly to
+#' an open base-graphics device.
+#' @noRd
+gexp_register_ggplot_downloads <- function(output, id_stem, plot_fn, width, height, filename_prefix, csv_dir = NULL) {
+  make_handler <- function(ext) {
+    shiny::downloadHandler(
+      filename = function() paste0(filename_prefix, ".", ext),
+      content = function(file) {
+        p <- plot_fn()
+        gexp_ggsave_from_file(file, p, width = width, height = height)
+        if (!is.null(csv_dir)) {
+          dir_val <- if (is.function(csv_dir)) csv_dir() else csv_dir
+          if (!is.null(dir_val) && nzchar(dir_val)) {
+            copy_path <- file.path(dir_val, paste0(filename_prefix, ".", ext))
+            try(file.copy(file, copy_path, overwrite = TRUE), silent = TRUE)
+          }
+        }
+      }
+    )
+  }
+  output[[paste0("download_", id_stem, "_png")]] <- make_handler("png")
+  output[[paste0("download_", id_stem, "_jpg")]] <- make_handler("jpg")
+  output[[paste0("download_", id_stem, "_pdf")]] <- make_handler("pdf")
   invisible(NULL)
 }
 
@@ -423,6 +522,74 @@ gexp_enrich_thin_metadata_list <- function(meta_list) {
 }
 
 
+#' Merge full per-GSE GEO phenodata columns into unified_metadata
+#'
+#' \code{unified_metadata} is built by \code{gexp_normalize_and_intersect()} as a
+#' minimal SampleID/Platform/Dataset/Condition schema (needed so datasets with
+#' incompatible phenotype columns can still be merged for DE). That means the full
+#' clinical/GEO phenotype columns already fetched into \code{rna_metadata_list} /
+#' \code{micro_metadata_list} during download never reach the analysis metadata
+#' shown to the user. This adds those columns back in (by sample ID, per GSE),
+#' without touching the existing required columns, so single- or multi-dataset
+#' step-by-step runs carry the same phenodata richness as the validation pipeline.
+#'
+#' @param unified_metadata data.frame with rownames = sample IDs and a Dataset column.
+#' @param rna_metadata_list Named list of per-GSE RNA-seq phenodata data.frames.
+#' @param micro_metadata_list Named list of per-GSE microarray phenodata data.frames.
+#' @return \code{unified_metadata} with additional GEO phenotype columns merged in.
+#' @keywords internal
+gexp_enrich_unified_metadata_with_full_pdata <- function(unified_metadata, rna_metadata_list = NULL,
+                                                          micro_metadata_list = NULL) {
+  if (is.null(unified_metadata) || !is.data.frame(unified_metadata) ||
+      nrow(unified_metadata) == 0L || !"Dataset" %in% colnames(unified_metadata)) {
+    return(unified_metadata)
+  }
+  gses <- unique(as.character(unified_metadata$Dataset))
+  full_pd_parts <- lapply(gses, function(gse) {
+    ids <- rownames(unified_metadata)[as.character(unified_metadata$Dataset) == gse]
+    md <- if (!is.null(rna_metadata_list) && gse %in% names(rna_metadata_list)) {
+      rna_metadata_list[[gse]]
+    } else if (!is.null(micro_metadata_list) && gse %in% names(micro_metadata_list)) {
+      micro_metadata_list[[gse]]
+    } else {
+      NULL
+    }
+    if (is.null(md) || !is.data.frame(md) || ncol(md) == 0L || nrow(md) == 0L) {
+      return(NULL)
+    }
+    md <- as.data.frame(md, stringsAsFactors = FALSE, check.names = FALSE)
+    md[] <- lapply(md, function(x) {
+      if (is.factor(x)) {
+        as.character(x)
+      } else if (is.list(x)) {
+        vapply(x, function(v) paste(as.character(unlist(v)), collapse = "; "), character(1))
+      } else {
+        x
+      }
+    })
+    md <- tryCatch(gexp_expand_geo_characteristics(md), error = function(e) md)
+    stub <- data.frame(title = ids, row.names = ids, stringsAsFactors = FALSE)
+    md <- .gexpipe_align_pdata_to_primary(stub, md)
+    keep <- intersect(ids, rownames(md))
+    if (length(keep) == 0L) return(NULL)
+    md[keep, , drop = FALSE]
+  })
+  full_pd_parts <- Filter(Negate(is.null), full_pd_parts)
+  if (length(full_pd_parts) == 0L) {
+    return(unified_metadata)
+  }
+  all_cols <- unique(unlist(lapply(full_pd_parts, colnames)))
+  full_pd_parts <- lapply(full_pd_parts, function(md) {
+    for (cc in setdiff(all_cols, colnames(md))) md[[cc]] <- NA_character_
+    md[, all_cols, drop = FALSE]
+  })
+  full_pd <- do.call(rbind, full_pd_parts)
+  tryCatch(
+    .gexpipe_merge_pdata_columns(unified_metadata, full_pd),
+    error = function(e) unified_metadata
+  )
+}
+
 #' Normalize phenotype labels for group extraction (e.g. parse GEO title text)
 #'
 #' For GEO series like GSE108413, treatment is only in \code{title}, e.g.
@@ -702,8 +869,7 @@ gexp_draw_ml_methods_venn <- function(sets,
     invisible(NULL)
   }
 
-  use_upset <- n_sets > 5L || any_empty || sum(non_empty) < 2L
-  if (use_upset) {
+  .draw_upset <- function() {
     upset_df <- gexp_ml_prepare_upset_df(sets)
     if (is.null(upset_df) || ncol(upset_df) == 0L) {
       graphics::plot.new()
@@ -760,47 +926,53 @@ gexp_draw_ml_methods_venn <- function(sets,
       graphics::plot.new()
       graphics::text(0.5, 0.5, paste("UpSet error:", conditionMessage(e)), cex = 1 * text_scale, col = "red")
     })
+    invisible(NULL)
+  }
+
+  use_upset <- n_sets > 5L || any_empty || sum(non_empty) < 2L
+  if (use_upset) {
+    .draw_upset()
     return(invisible(NULL))
   }
 
   sets_draw <- lapply(sets, function(g) unique(as.character(g)))
   cat_names <- names(sets_draw)
+  n_draw <- length(sets_draw)
+  # scaled/euler only work for 2-3 circles. rotation= matches multiple
+  # formals in 5-set venn.diagram and used to blank this plot.
+  scaled_ok <- n_draw <= 3L
+  venn_args <- list(
+    x = sets_draw,
+    category.names = cat_names,
+    filename = NULL,
+    output = TRUE,
+    disable.logging = TRUE,
+    print.mode = "raw",
+    scaled = scaled_ok,
+    euler.d = scaled_ok,
+    lwd = 2.2,
+    lty = "solid",
+    fill = fill_colors,
+    alpha = 0.58,
+    cex = if (n_draw >= 5L) 0.95 * text_scale else 1.35 * text_scale,
+    fontface = "bold",
+    fontfamily = "sans",
+    cat.cex = if (n_draw >= 5L) 0.85 * text_scale else 1.12 * text_scale,
+    cat.fontface = "bold",
+    cat.fontfamily = "sans",
+    cat.col = fill_colors,
+    margin = if (n_draw >= 4L) 0.18 else 0.11,
+    main = title,
+    main.cex = 1.15 * text_scale,
+    main.fontface = "bold"
+  )
   grid::grid.newpage()
   vp <- tryCatch(
-    VennDiagram::venn.diagram(
-      x = sets_draw,
-      category.names = cat_names,
-      filename = NULL,
-      output = TRUE,
-      disable.logging = TRUE,
-      print.mode = "raw",
-      scaled = TRUE,
-      euler.d = TRUE,
-      lwd = 2.2,
-      lty = "solid",
-      col = grDevices::adjustcolor("white", alpha.f = 0.85),
-      fill = fill_colors,
-      alpha = 0.58,
-      cex = 1.35 * text_scale,
-      fontface = "bold",
-      fontfamily = "sans",
-      cat.cex = 1.12 * text_scale,
-      cat.fontface = "bold",
-      cat.fontfamily = "sans",
-      cat.col = fill_colors,
-      cat.default.pos = "outer",
-      margin = 0.11,
-      rotation = -12,
-      main = title,
-      main.cex = 1.25 * text_scale,
-      main.fontface = "bold",
-      main.dist = 0.06
-    ),
+    do.call(VennDiagram::venn.diagram, venn_args),
     error = function(e) NULL
   )
   if (is.null(vp)) {
-    graphics::plot.new()
-    graphics::text(0.5, 0.5, "Could not draw Venn diagram for these gene sets.", cex = 1.1 * text_scale, col = "gray40")
+    .draw_upset()
     return(invisible(NULL))
   }
   grid::grid.draw(vp)
@@ -1155,6 +1327,7 @@ GPL_to_biomart_probe_attr <- c(
     return(tab)
   }
   .fetch_gpl <- function(destdir_val) {
+    try(.gexpipe_clean_corrupt_gpl_cache(destdir_val, gpl_id), silent = TRUE)
     tryCatch(
       .gexpipe_geo_quiet(GEOquery::getGEO(gpl_id, destdir = destdir_val)),
       error = function(e) NULL
@@ -1539,6 +1712,12 @@ detect_gene_id_format <- function(ids) {
   if (length(ids) == 0) {
     return("Unknown")
   }
+  if (.gexpipe_is_circbase_id(ids)) {
+    return("circRNA ID (circBase) - converting to host gene symbol")
+  }
+  if (.gexpipe_is_circrna_discovery_id(ids)) {
+    return("circRNA discovery ID (e.g. Arraystar array) - no public gene-symbol mapping available")
+  }
   head_ids <- .gexpipe_stratified_id_sample(ids, 80L)
   if (length(head_ids) > 0L && any(.gexpipe_id_looks_like_probe(head_ids))) {
     if (mean(grepl("^ENSG", head_ids, ignore.case = TRUE), na.rm = TRUE) > 0.3) {
@@ -1676,6 +1855,7 @@ probe_ids_to_symbol_gpl <- function(probe_ids, gpl_id, gse_id = NULL) {
     }
 
     .fetch_gpl <- function(destdir_val) {
+      try(.gexpipe_clean_corrupt_gpl_cache(destdir_val, gpl_id), silent = TRUE)
       tryCatch(
                 .gexpipe_geo_quiet(GEOquery::getGEO(gpl_id, destdir = destdir_val)),
         error = function(e) NULL
@@ -2066,7 +2246,7 @@ map_microarray_ids <- function(micro_expr, fdata, micro_eset = NULL, gse_id = NU
 
   platform_id <- tryCatch(
     {
-      if (!is.null(micro_eset)) Biobase::annotation(micro_eset) else NULL
+      if (!is.null(micro_eset)) .gexpipe_geo_annotation(micro_eset) else NULL
     },
     error = function(e) NULL
   )
@@ -2241,8 +2421,79 @@ entrez_to_symbol_biomart <- function(ids) {
   if (sum(!is.na(out)) > length(ids) * 0.1) out else NULL
 }
 
+# ==============================================================================
+# circRNA ID -> host gene symbol (circBase naming, e.g. hsa_circ_0004771)
+# ==============================================================================
+# Bundled from circBase (circbase.org)'s downloadable annotation tables
+# (Salzman2013, Jeck2013, Memczak2013, Rybak2015, Zhang2013), which include
+# a host "gene symbol" column - verified directly against the live download
+# before bundling. This ONLY covers circBase's own "hsa_circ_XXXXXXX"
+# numbering. It does NOT cover a study's original discovery-cohort probe/
+# array IDs (e.g. Arraystar circRNA microarray IDs like "A-NT2RP7011570",
+# which encode the tissue/cell line the circRNA was first found in, not a
+# circBase ID) - there is no public, generically-fetchable mapping from
+# that scheme to a gene symbol, so those are correctly left unconverted
+# rather than guessed at (see .gexpipe_is_circrna_discovery_id() below).
+.gexpipe_circbase_table_cache <- new.env(parent = emptyenv())
+
+.gexpipe_circbase_table <- function() {
+  if (!is.null(.gexpipe_circbase_table_cache$tbl)) {
+    return(.gexpipe_circbase_table_cache$tbl)
+  }
+  path <- system.file("extdata", "circbase_circrna_to_symbol.tsv.gz", package = "GExPipe")
+  if (!nzchar(path) || !file.exists(path)) {
+    .gexpipe_circbase_table_cache$tbl <- character(0)
+    return(character(0))
+  }
+  tbl <- tryCatch({
+    df <- utils::read.delim(gzfile(path), header = FALSE, stringsAsFactors = FALSE,
+                             col.names = c("circ_id", "symbol"))
+    stats::setNames(as.character(df$symbol), as.character(df$circ_id))
+  }, error = function(e) character(0))
+  .gexpipe_circbase_table_cache$tbl <- tbl
+  tbl
+}
+
+# circBase's own numbering: species-prefixed "circ" IDs (hsa_circ_..., etc).
+.gexpipe_is_circbase_id <- function(ids) {
+  sample_ids <- head(ids[!is.na(ids) & nzchar(trimws(ids))], 200L)
+  length(sample_ids) > 0L && mean(grepl("^[a-z]{2,4}_circ_[0-9]+$", sample_ids, ignore.case = TRUE), na.rm = TRUE) > 0.5
+}
+
+# A study's ORIGINAL circRNA discovery ID (e.g. Arraystar circRNA
+# microarray / Salzman-Jeck naming: "A-NT2RP7011570", "C-ADG04260") -
+# letter prefix, dash, alphabetic tissue/cell-line code, digits. No public
+# mapping exists from this to a gene symbol; used only to give an honest,
+# specific log message instead of the generic "Microarray probe-like ID"
+# guess, which implied a standard, resolvable probe format.
+.gexpipe_is_circrna_discovery_id <- function(ids) {
+  sample_ids <- head(ids[!is.na(ids) & nzchar(trimws(ids))], 200L)
+  # Tissue/cell-line code can itself contain digits (e.g. "NT2RP" from the
+  # NT2 cell line), so the middle segment must start with a letter but may
+  # mix letters and digits before the long trailing serial number.
+  length(sample_ids) > 0L && mean(grepl("^[A-Za-z]-[A-Za-z][A-Za-z0-9]*[0-9]{4,}$", sample_ids), na.rm = TRUE) > 0.5
+}
+
+# Look up circBase circRNA IDs against the bundled table. Returns NULL if
+# the table is unavailable or IDs don't match circBase's numbering.
+circbase_ids_to_symbol <- function(ids) {
+  if (is.null(ids) || length(ids) == 0 || !.gexpipe_is_circbase_id(ids)) {
+    return(NULL)
+  }
+  tbl <- .gexpipe_circbase_table()
+  if (length(tbl) == 0) {
+    return(NULL)
+  }
+  out <- unname(tbl[as.character(ids)])
+  if (sum(!is.na(out)) > length(ids) * 0.05) out else NULL
+}
+
 # Convert any gene ID (probe, Entrez, Ensembl, or symbol) to gene symbol for overlap
 any_id_to_symbol <- function(ids, gpl_id = NULL, gse_id = NULL) {
+  circ_sym <- circbase_ids_to_symbol(ids)
+  if (!is.null(circ_sym)) {
+    return(circ_sym)
+  }
   if (is.null(ids) || length(ids) == 0) {
     return(ids)
   }
@@ -2422,9 +2673,9 @@ run_gse_annotation_and_download <- function(gse_id, dest_dir = getwd(), save_ann
   }
 
   micro_eset <- if (inherits(gse, "list")) gse[[1]] else gse
-  platform_id <- Biobase::annotation(micro_eset)
-  micro_expr <- Biobase::exprs(micro_eset)
-  fdata <- Biobase::fData(micro_eset)
+platform_id <- .gexpipe_geo_annotation(micro_eset)
+micro_expr <- .gexpipe_geo_expr_matrix(micro_eset)
+fdata <- .gexpipe_geo_fdata(micro_eset)
 
   gene_symbols <- map_microarray_ids(micro_expr, fdata, micro_eset, gse_id = gse_id)
   rownames(micro_expr) <- gene_symbols
@@ -2530,33 +2781,23 @@ download_ncbi_raw_counts <- function(gse_id, dest_dir) {
     "GRCh38.p11_NCBI", "GRCh38.p10_NCBI", "GRCh37.p13_NCBI",
     "GRCh38_NCBI", "GRCh37_NCBI"
   )
+  dir.create(dest_dir, showWarnings = FALSE, recursive = TRUE)
   for (genome in genome_versions) {
     filename <- paste0(gse_id, "_raw_counts_", genome, ".tsv.gz")
     dest_file <- file.path(dest_dir, filename)
-    if (file.exists(dest_file) && file.info(dest_file)$size > 1000) {
-      return(dest_file)
-    }
     url <- paste0(
       "https://www.ncbi.nlm.nih.gov/geo/download/?type=rnaseq_counts&acc=",
       gse_id, "&format=file&file=", filename
     )
-    result <- tryCatch(
-      {
-        download.file(url, dest_file, mode = "wb", quiet = TRUE)
-        if (file.exists(dest_file) && file.info(dest_file)$size > 1000) {
-          return(dest_file)
-        }
-        if (file.exists(dest_file)) file.remove(dest_file)
-        NULL
-      },
-      error = function(e) NULL,
-      warning = function(w) NULL
+    path <- tryCatch(
+      .gexpipe_download_binary_url(url, dest_file),
+      error = function(e) NULL
     )
-    if (!is.null(result)) {
-      return(result)
+    if (!is.null(path)) {
+      return(path)
     }
   }
-  return(NULL)
+  NULL
 }
 
 # Try all NCBI genome versions and return the path with the MOST rows (fullest matrix).
@@ -2566,36 +2807,33 @@ download_ncbi_raw_counts_best <- function(gse_id, dest_dir) {
     "GRCh38.p11_NCBI", "GRCh38.p10_NCBI", "GRCh37.p13_NCBI",
     "GRCh38_NCBI", "GRCh37_NCBI"
   )
+  dir.create(dest_dir, showWarnings = FALSE, recursive = TRUE)
   best_path <- NULL
   best_nrow <- 0L
   for (genome in genome_versions) {
     filename <- paste0(gse_id, "_raw_counts_", genome, ".tsv.gz")
     dest_file <- file.path(dest_dir, filename)
-    if (!file.exists(dest_file) || file.info(dest_file)$size < 1000) {
-      url <- paste0(
-        "https://www.ncbi.nlm.nih.gov/geo/download/?type=rnaseq_counts&acc=",
-        gse_id, "&format=file&file=", filename
-      )
-      tryCatch(
-        {
-          download.file(url, dest_file, mode = "wb", quiet = TRUE)
-        },
-        error = function(e) NULL,
-        warning = function(w) NULL
-      )
+    url <- paste0(
+      "https://www.ncbi.nlm.nih.gov/geo/download/?type=rnaseq_counts&acc=",
+      gse_id, "&format=file&file=", filename
+    )
+    path <- tryCatch(
+      .gexpipe_download_binary_url(url, dest_file),
+      error = function(e) NULL
+    )
+    if (is.null(path)) {
+      next
     }
-    if (file.exists(dest_file) && file.info(dest_file)$size > 1000) {
-      n <- tryCatch(
-        {
-          df <- .gexpipe_fread_counts(dest_file, nrows = 500000L)
-          nrow(df)
-        },
-        error = function(e) 0L
-      )
-      if (n > best_nrow) {
-        best_nrow <- n
-        best_path <- dest_file
-      }
+    n <- tryCatch(
+      {
+        df <- .gexpipe_fread_counts(path, nrows = 500000L)
+        nrow(df)
+      },
+      error = function(e) 0L
+    )
+    if (is.finite(n) && n > best_nrow) {
+      best_nrow <- n
+      best_path <- path
     }
   }
   best_path
@@ -2712,10 +2950,16 @@ gexpipe_spearman_cor <- function(x) {
 #' Read tabular count files (GEO supplementary files are often messy)
 #' @keywords internal
 .gexpipe_fread_counts <- function(path, ...) {
+  args <- list(...)
+  if (!"quote" %in% names(args)) {
+    args$quote <- ""
+  }
+  args$input <- path
+  args$data.table <- FALSE
   withCallingHandlers(
-    data.table::fread(path, data.table = FALSE, ...),
+    do.call(data.table::fread, args),
     warning = function(w) {
-      if (grepl("Column name|EOF|stopped early", conditionMessage(w), ignore.case = TRUE)) {
+      if (grepl("Column name|EOF|stopped early|improper quoting", conditionMessage(w), ignore.case = TRUE)) {
         invokeRestart("muffleWarning")
       }
     }
@@ -2875,4 +3119,114 @@ normalize_rnaseq <- function(count_matrix, dataset_name = NULL, method = "TMM") 
   )
 
   return(logcpm_matrix)
+}
+
+#' Per-gene Normal-vs-Disease boxplots with significance stars
+#'
+#' One builder for BOTH the training and the validation expression panels so
+#' they share gene order, panel layout, group order, colours, styling and the
+#' same significance annotation. Significance: Wilcoxon rank-sum test per gene,
+#' Benjamini-Hochberg adjusted across the genes shown; stars: * < 0.05,
+#' ** < 0.01, *** < 0.001, **** < 0.0001, ns = not significant.
+#' @param long data.frame with SampleID, Group, Gene (factor; its level order is
+#'   the panel order) and Expression.
+#' @param title Plot title.
+#' @param max_genes Maximum number of panels (first ones in the factor order).
+#' @noRd
+gexp_expression_boxplot <- function(long, title, max_genes = 12L, ncol_max = 4L) {
+  long <- long[is.finite(long$Expression), , drop = FALSE]
+  genes <- head(levels(droplevels(long$Gene)), max_genes)
+  long <- long[long$Gene %in% genes, , drop = FALSE]
+  long$Gene <- factor(as.character(long$Gene), levels = genes)
+  grp <- as.character(long$Group)
+  lv <- if (all(c("Normal", "Disease") %in% grp)) c("Normal", "Disease") else unique(grp)
+  long$Group <- factor(grp, levels = lv)
+  fill <- c(Normal = "#43A047", Disease = "#E53935")
+  if (!all(lv %in% names(fill))) fill <- stats::setNames(grDevices::hcl.colors(length(lv), "Set 2"), lv)
+  fill <- fill[lv]
+  n_by <- table(unique(long[, c("SampleID", "Group")])$Group)[lv]
+  x_labels <- paste0(lv, "\n(n = ", as.integer(n_by), ")")
+
+  ann <- NULL
+  if (length(lv) == 2L) {
+    pv <- vapply(genes, function(g) {
+      d <- long[long$Gene == g, , drop = FALSE]
+      a <- d$Expression[d$Group == lv[1L]]; b <- d$Expression[d$Group == lv[2L]]
+      if (length(a) < 2L || length(b) < 2L) return(NA_real_)
+      tryCatch(suppressWarnings(stats::wilcox.test(a, b, exact = FALSE)$p.value), error = function(e) NA_real_)
+    }, numeric(1))
+    padj <- stats::p.adjust(pv, method = "BH")
+    lab <- as.character(cut(padj, breaks = c(-Inf, 1e-4, 1e-3, 1e-2, 5e-2, Inf),
+                            labels = c("****", "***", "**", "*", "ns"), right = FALSE))
+    lab[is.na(lab)] <- "ns"
+    rng <- t(vapply(genes, function(g) range(long$Expression[long$Gene == g]), numeric(2)))
+    span <- pmax(rng[, 2L] - rng[, 1L], 1e-9)
+    ann <- data.frame(Gene = factor(genes, levels = genes), y = rng[, 2L] + 0.07 * span,
+                      ylab = rng[, 2L] + 0.085 * span, label = lab, stringsAsFactors = FALSE)
+  }
+
+  n_genes <- length(genes)
+  p <- ggplot2::ggplot(long, ggplot2::aes(x = Group, y = Expression, fill = Group)) +
+    ggplot2::geom_boxplot(outlier.shape = NA, alpha = 0.85) +
+    ggplot2::geom_jitter(width = 0.15, size = 1, alpha = 0.5)
+  if (!is.null(ann)) {
+    p <- p +
+      ggplot2::geom_segment(data = ann, ggplot2::aes(x = 1, xend = 2, y = y, yend = y), inherit.aes = FALSE, linewidth = 0.4) +
+      ggplot2::geom_text(data = ann, ggplot2::aes(x = 1.5, y = ylab, label = label), inherit.aes = FALSE,
+                         vjust = 0, size = ifelse(ann$label == "ns", 3, 5), fontface = "bold")
+  }
+  p +
+    ggplot2::facet_wrap(~Gene, scales = "free_y", ncol = min(ncol_max, n_genes)) +
+    ggplot2::scale_fill_manual(values = fill) +
+    ggplot2::scale_x_discrete(labels = x_labels) +
+    ggplot2::scale_y_continuous(expand = ggplot2::expansion(mult = c(0.05, 0.15))) +
+    ggplot2::theme_minimal(base_size = 11) +
+    ggplot2::theme(legend.position = "top", axis.title.x = ggplot2::element_blank(),
+                   strip.text = ggplot2::element_text(face = "bold")) +
+    ggplot2::labs(y = "Expression", title = title,
+                  caption = "Wilcoxon rank-sum test per gene, Benjamini-Hochberg adjusted across the genes shown. **** < 0.0001, *** < 0.001, ** < 0.01, * < 0.05, ns = not significant.")
+}
+
+#' Gene funnel: how many genes survive at each pipeline step
+#'
+#' @param n Named list of counts (NULL / NA = step not run yet): de_rna, de_micro, de_merged,
+#'   consensus, common, ml, roc_tested, roc_pass, roc_selected, nomogram.
+#' @param parallel Whether the run is in Parallel mode.
+#' @return data.frame(Step, Genes, Status, Hint); Status is "not run", "ok" or "STOPS HERE"
+#'   (the first step that reached zero genes).
+#' @noRd
+gexp_gene_funnel_table <- function(n, parallel = FALSE) {
+  val <- function(k) { v <- n[[k]]; if (is.null(v) || length(v) != 1L || is.na(v)) NA_integer_ else as.integer(v) }
+  steps <- list(
+    list("Step 6 - significant genes, RNA-seq", "de_rna", parallel,
+         "No gene passes the Step 6 cutoffs. Lower the LogFC cutoff and keep adjusted P at 0.05; check that the groups are Normal vs Disease and that the DE method suits the data."),
+    list("Step 6 - significant genes, microarray", "de_micro", parallel,
+         "No gene passes the Step 6 cutoffs. Microarray fold changes are small, so try a LogFC cutoff of 0.2-0.3; check the groups."),
+    list("Step 6 - significant genes (merged)", "de_merged", !parallel,
+         "No gene passes the Step 6 cutoffs. Lower the LogFC cutoff; check the groups and that batch correction did not remove the disease signal."),
+    list("Step 7 - consensus of both platforms", "consensus", parallel,
+         "No gene is significant on both platforms with the same direction. Relax the Step 6 cutoffs, turn off 'same direction', or switch to Union (exploratory)."),
+    list("Step 8 - common genes (DEG and WGCNA)", "common", TRUE,
+         "No overlap between the significant genes and the WGCNA modules. Relax the DE cutoffs or pick other WGCNA modules."),
+    list("Step 10 - machine-learning genes", "ml", TRUE,
+         "The ML step kept no gene. Check that Step 8 produced genes and that each group has enough samples."),
+    list("Step 12 - genes with training AUC >= 0.8", "roc_pass", TRUE,
+         "No gene reaches AUC 0.8 on the training data (fixed filter). The effect may be weak, or groups/batches may be mixed; recheck Steps 4-6."),
+    list("Step 12 - genes you selected", "roc_selected", TRUE,
+         "Select genes in Step 12 (ROC) to carry into the nomogram."),
+    list("Step 14 - nomogram predictors", "nomogram", TRUE,
+         "The nomogram needs at least 10 Normal and 10 Disease samples and trims the panel to what the sample size supports.")
+  )
+  rows <- Filter(function(s) isTRUE(s[[3L]]), steps)
+  out <- data.frame(Step = vapply(rows, `[[`, character(1), 1L), Genes = vapply(rows, function(s) val(s[[2L]]), integer(1)),
+                    Status = NA_character_, Hint = "", stringsAsFactors = FALSE)
+  stopped <- FALSE
+  for (i in seq_len(nrow(out))) {
+    g <- out$Genes[i]
+    if (is.na(g)) { out$Status[i] <- "not run"; next }
+    if (g == 0L && !stopped) { out$Status[i] <- "STOPS HERE"; out$Hint[i] <- rows[[i]][[4L]]; stopped <- TRUE }
+    else if (g == 0L) out$Status[i] <- "empty"
+    else out$Status[i] <- "ok"
+  }
+  out
 }

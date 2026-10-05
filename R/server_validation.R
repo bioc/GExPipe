@@ -8,6 +8,9 @@
 
 server_validation <- function(input, output, session, rv) {
 
+  # Signature-level validation panel (own module: R/server_signature_validation.R)
+  server_signature_validation(input, output, session, rv)
+
   # ---- Observe: store validation mode into rv ----
   observeEvent(input$validation_mode, {
     rv$validation_mode <- input$validation_mode
@@ -91,13 +94,17 @@ server_validation <- function(input, output, session, rv) {
               label = tags$span(
                 "Validation GSE IDs ",
                 tags$span(
-                  "(any GEO series — one or more, comma/space separated)",
+                  "(any GEO series - one or more, comma/space separated)",
                   style = "font-weight: normal; color: #999; font-size: 12px;"
                 )
               ),
               value = "",
               rows = 2,
-              placeholder = "GSE114007, GSE50760"
+              placeholder = "e.g. GSE162462 (RNA-seq) or GSE13159 (Microarray)"
+            ),
+            tags$p(
+              tags$strong("Examples: "), "GSE162462 (RNA-seq) or GSE13159 (Microarray) as the validation dataset.",
+              style = "margin: -6px 0 0 0; font-size: 11px; color: #999;"
             )
           ),
           column(3,
@@ -126,6 +133,9 @@ server_validation <- function(input, output, session, rv) {
 
         # Step B: Phenodata browser & column selection (after download)
         uiOutput("ext_val_phenodata_ui"),
+
+        # Step B2: Batch correction (same approach as main analysis Step 5)
+        uiOutput("ext_val_batch_ui"),
 
         # Step C: Run validation (after column selected)
         uiOutput("ext_val_run_ui"),
@@ -227,7 +237,7 @@ server_validation <- function(input, output, session, rv) {
         log_cb(sprintf(
           "  %s phenodata: %d \u2192 %d columns%s\n",
           gse, n_before, n_after,
-          if (n_after <= 2L) " (WARNING: GEO returned few columns — check network)" else ""
+          if (n_after <= 2L) " (WARNING: GEO returned few columns - check network)" else ""
         ))
       }
     }
@@ -254,7 +264,7 @@ server_validation <- function(input, output, session, rv) {
         tags$div(
           icon("exclamation-triangle"),
           tags$strong(" Enter at least one GSE ID."),
-          " Example: GSE114007, GSE50760"
+          " Examples: GSE162462 (RNA-seq), GSE13159 (Microarray)"
         ),
         type = "warning", duration = 5
       )
@@ -269,6 +279,10 @@ server_validation <- function(input, output, session, rv) {
         ext_log <- ""
         all_expr_list <- list()
         all_metadata_list <- list()
+        rna_counts_list_val <- list()
+        micro_expr_list_val <- list()
+        platform_per_gse_val <- list()
+        micro_eset_list_val  <- list()
         rnaseq_ids <- character(0)
         micro_ids <- character(0)
 
@@ -276,15 +290,20 @@ server_validation <- function(input, output, session, rv) {
         else if (platform == "microarray") { micro_ids <- gse_ids }
         else { rnaseq_ids <- gse_ids; micro_ids <- gse_ids }
 
-        # Clear previous external validation cache so this run doesn't mix with old files
+        # Remove cached files for GSEs NOT in this run (so stale datasets don't
+        # mix in), but KEEP any file matching a currently-requested GSE ID so
+        # an already-downloaded/manually-placed file is reused, not re-downloaded.
         rna_dir <- file.path(getwd(), "ext_val_rna")
         micro_dir <- file.path(getwd(), "ext_val_micro")
-        if (dir.exists(rna_dir) && length(rnaseq_ids) > 0) {
-          tryCatch({ unlink(rna_dir, recursive = TRUE, force = TRUE) }, error = function(e) NULL)
+        .gexpipe_clear_unmatched_cache <- function(dir, ids) {
+          if (!dir.exists(dir)) return(invisible(NULL))
+          f <- list.files(dir, full.names = TRUE)
+          keep <- vapply(f, function(p) any(vapply(ids, function(id) grepl(id, basename(p), fixed = TRUE), logical(1))), logical(1))
+          stale <- f[!keep]
+          if (length(stale) > 0) tryCatch(unlink(stale, recursive = TRUE, force = TRUE), error = function(e) NULL)
         }
-        if (dir.exists(micro_dir) && length(micro_ids) > 0) {
-          tryCatch({ unlink(micro_dir, recursive = TRUE, force = TRUE) }, error = function(e) NULL)
-        }
+        if (length(rnaseq_ids) > 0) .gexpipe_clear_unmatched_cache(rna_dir, rnaseq_ids)
+        if (length(micro_ids) > 0) .gexpipe_clear_unmatched_cache(micro_dir, micro_ids)
         if (length(rnaseq_ids) > 0) dir.create(rna_dir, showWarnings = FALSE, recursive = TRUE)
         if (length(micro_ids) > 0) dir.create(micro_dir, showWarnings = FALSE, recursive = TRUE)
 
@@ -303,6 +322,11 @@ server_validation <- function(input, output, session, rv) {
             next
           }
           all_expr_list[[gse_id]] <- res$count_matrix
+          rna_counts_list_val[[gse_id]] <- res$count_matrix
+          tryCatch(
+            .gexpipe_ext_val_persist_download(gse_id, platform = "rna", rna_dir = rna_dir),
+            error = function(e) NULL
+          )
           md <- res$metadata
           if (is.null(md) || !is.data.frame(md) || ncol(md) <= 1L) {
             md <- tryCatch(
@@ -336,6 +360,17 @@ server_validation <- function(input, output, session, rv) {
             next
           }
           all_expr_list[[gse_id]] <- res$micro_expr
+          micro_expr_list_val[[gse_id]] <- res$micro_expr
+          tryCatch(
+            .gexpipe_ext_val_persist_download(gse_id, platform = "micro", micro_dir = micro_dir),
+            error = function(e) NULL
+          )
+          if (!is.null(res$platform_id) && nzchar(res$platform_id)) {
+            platform_per_gse_val[[gse_id]] <- res$platform_id
+          }
+          if (!is.null(res$micro_eset)) {
+            micro_eset_list_val[[gse_id]] <- res$micro_eset
+          }
           md <- res$metadata
           if (is.null(md) || !is.data.frame(md) || ncol(md) <= 1L) {
             md <- tryCatch(
@@ -358,31 +393,103 @@ server_validation <- function(input, output, session, rv) {
           rv$ext_val_log <- ext_log; return()
         }
 
+        incProgress(0.1, detail = "Normalizing gene IDs to symbols (same as training data)...")
+        # Same ID normalization Step 1 Download always runs (gexp_download_normalize_ids_for_overlap),
+        # with the SAME extra arguments Step 1 passes (platform_per_gse, micro_eset_list).
+        # Without those, this conversion has less information to map probes to
+        # symbols with (no GPL ID hint, no fData fallback) than the training
+        # pipeline does, and can silently leave more probes unconverted -
+        # producing a different (larger, less clean) gene count for the same
+        # GSE than the training run gets for it.
+        normalized_val <- tryCatch(
+          gexp_download_normalize_ids_for_overlap(
+            micro_expr_list  = micro_expr_list_val,
+            rna_counts_list  = rna_counts_list_val,
+            platform_per_gse = platform_per_gse_val,
+            micro_eset_list  = micro_eset_list_val
+          ),
+          error = function(e) NULL
+        )
+        if (!is.null(normalized_val)) {
+          micro_expr_list_val <- normalized_val$micro_expr_list
+          rna_counts_list_val <- normalized_val$rna_counts_list
+          for (gse in names(micro_expr_list_val)) all_expr_list[[gse]] <- micro_expr_list_val[[gse]]
+          for (gse in names(rna_counts_list_val)) all_expr_list[[gse]] <- rna_counts_list_val[[gse]]
+          ext_log <- paste0(ext_log, normalized_val$log_text)
+        }
+
         incProgress(0.25, detail = "Fetching full GEO phenodata for every GSE...")
-        enrich_log <- ""
+        enrich_state <- new.env(parent = emptyenv())
+        enrich_state$log <- ""
         all_metadata_list <- .gexpipe_ext_val_enrich_metadata(
           all_expr_list,
           all_metadata_list,
-          log_cb = function(msg) { enrich_log <<- paste0(enrich_log, msg) }
+          log_cb = function(msg) { enrich_state$log <- paste0(enrich_state$log, msg) }
         )
+        enrich_log <- enrich_state$log
         if (nzchar(enrich_log)) {
           ext_log <- paste0(ext_log, "\nPhenodata enrichment (all entered GSEs):\n", enrich_log)
         }
 
-        incProgress(0.15, detail = "Combining genes...")
-        common_genes_val <- Reduce(intersect, lapply(all_expr_list, rownames))
-        if (length(common_genes_val) == 0L) {
-          showNotification(
-            tags$div(icon("times-circle"), tags$strong(" No common genes across validation datasets.")),
-            type = "error", duration = 8
-          )
-          rv$ext_val_log <- paste0(ext_log, "\nNo common genes after ID mapping.\n")
-          return()
+        incProgress(0.15, detail = "Normalizing (same pipeline as training data)...")
+        # Same per-dataset normalization as Step 2 of the main analysis:
+        # microarray quantile-normalized per GSE, RNA-seq TMM -> log-CPM per
+        # GSE, then intersected on common genes and globally quantile-aligned.
+        # This replaces a naive raw-value cbind, which skipped normalization
+        # entirely and could feed unnormalized values into DE.
+        # de_method must reflect the user's actual Step A choice (DE Method
+        # radio button) - gexp_normalize_and_intersect() only computes and
+        # keeps raw_counts_for_deseq2 when de_method is deseq2/edger/
+        # limma_voom (see its save_raw condition). Hardcoding "limma" here
+        # meant DESeq2/edgeR were NEVER available for validation DE, no
+        # matter what the user selected - it silently fell back to limma
+        # every time.
+        ext_val_de_method_chosen <- if (!is.null(input$ext_val_de_method) && nzchar(input$ext_val_de_method)) {
+          input$ext_val_de_method
+        } else {
+          "limma"
         }
-        for (gse in names(all_expr_list)) {
-          all_expr_list[[gse]] <- all_expr_list[[gse]][common_genes_val, , drop = FALSE]
+        norm_out_val <- tryCatch(
+          gexp_normalize_and_intersect(
+            micro_expr_list = micro_expr_list_val,
+            rna_counts_list = rna_counts_list_val,
+            micro_norm_method = "quantile",
+            rnaseq_norm_method = "TMM",
+            de_method = ext_val_de_method_chosen,
+            apply_global_quantile = TRUE,
+            keep_platforms_separate = FALSE
+          ),
+          error = function(e) NULL
+        )
+
+        if (!is.null(norm_out_val) && !is.null(norm_out_val$combined_expr) &&
+            nrow(norm_out_val$combined_expr) > 0L) {
+          combined_ext_expr <- norm_out_val$combined_expr
+          rv$ext_val_counts_for_deseq2 <- norm_out_val$raw_counts_for_deseq2
+          ext_log <- paste0(ext_log, "\n", norm_out_val$log_text)
+        } else {
+          # Fall back to a plain gene-intersected cbind if normalization
+          # could not run (e.g. too few genes/samples for RMA/TMM internals).
+          common_genes_val <- Reduce(intersect, lapply(all_expr_list, rownames))
+          if (length(common_genes_val) == 0L) {
+            showNotification(
+              tags$div(icon("times-circle"), tags$strong(" No common genes across validation datasets.")),
+              type = "error", duration = 8
+            )
+            rv$ext_val_log <- paste0(ext_log, "\nNo common genes after ID mapping.\n")
+            return()
+          }
+          for (gse in names(all_expr_list)) {
+            all_expr_list[[gse]] <- all_expr_list[[gse]][common_genes_val, , drop = FALSE]
+          }
+          combined_ext_expr <- do.call(cbind, all_expr_list)
+          rv$ext_val_counts_for_deseq2 <- if (length(rna_counts_list_val) > 0L) {
+            do.call(cbind, rna_counts_list_val)
+          } else {
+            NULL
+          }
+          ext_log <- paste0(ext_log, "\nWARNING: per-dataset normalization failed; using raw gene-intersected values.\n")
         }
-        combined_ext_expr <- do.call(cbind, all_expr_list)
 
         ext_meta <- .gexpipe_ext_val_combine_metadata(all_expr_list, all_metadata_list)
         expr_cols <- colnames(combined_ext_expr)
@@ -513,7 +620,7 @@ server_validation <- function(input, output, session, rv) {
             icon("check-circle"),
             tags$strong(paste0(" Phenodata refreshed: ", n_pd, " columns.")),
             if (length(geo_cols) <= 2L)
-              " Still thin — check NCBI GEO network access."
+              " Still thin - check NCBI GEO network access."
             else
               " Select the disease/normal column below."
           ),
@@ -611,22 +718,98 @@ server_validation <- function(input, output, session, rv) {
         )
       ),
       tags$div(style = "margin-top: 12px;",
-        fluidRow(
-          column(6,
-            selectInput("ext_val_group_col", "Select Group Column:",
-              choices = col_choices, selected = preselect, width = "100%")
+        radioButtons("ext_val_group_mode", "How do you want to define Normal / Disease groups?",
+          choices = c("By phenodata column" = "column",
+                      "Manual: tick samples in the table above" = "manual"),
+          selected = {
+            m <- shiny::isolate(input$ext_val_group_mode)
+            if (is.null(m)) "column" else m
+          }, inline = TRUE),
+        conditionalPanel("input.ext_val_group_mode != 'manual'",
+          fluidRow(
+            column(6,
+              selectInput("ext_val_group_col", "Select Group Column:",
+                choices = col_choices, selected = preselect, width = "100%")
+            ),
+            column(6,
+              uiOutput("ext_val_column_preview_ui")
+            )
           ),
-          column(6,
-            uiOutput("ext_val_column_preview_ui")
+          uiOutput("ext_val_filter2_ui")
+        ),
+        conditionalPanel("input.ext_val_group_mode == 'manual'",
+          tags$div(
+            style = "padding: 12px; background: #f0fff4; border: 1px solid #b7e4c7; border-radius: 6px;",
+            tags$p(icon("hand-pointer"), " Tick rows in the phenodata table above (use the column search boxes to narrow it, then ",
+                   tags$strong("Tick all filtered rows"), "), then assign them:",
+                   style = "font-size: 13px; margin-bottom: 8px;"),
+            tags$div(style = "display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px;",
+              actionButton("ext_val_manual_select_filtered", tagList(icon("check-square"), " Tick all filtered rows"), class = "btn-default btn-sm"),
+              actionButton("ext_val_manual_normal", tagList(icon("arrow-right"), " Assign ticked \u2192 Normal"), class = "btn-success btn-sm"),
+              actionButton("ext_val_manual_disease", tagList(icon("arrow-right"), " Assign ticked \u2192 Disease"), class = "btn-danger btn-sm"),
+              actionButton("ext_val_manual_clear", tagList(icon("eraser"), " Unassign ticked"), class = "btn-warning btn-sm"),
+              actionButton("ext_val_manual_clear_all", tagList(icon("trash"), " Clear all"), class = "btn-link btn-sm")
+            ),
+            uiOutput("ext_val_manual_summary_ui")
           )
         )
       )
     )
   })
 
+  # Optional second filter: narrow the study to samples whose value in another
+  # phenodata column (e.g. tissue / source) is in a chosen keep-list.
+  ext_val_filter2_open <- reactiveVal(FALSE)
+  observeEvent(rv$ext_val_metadata, ext_val_filter2_open(FALSE), ignoreNULL = FALSE)
+  observeEvent(input$ext_val_filter2_add, ext_val_filter2_open(TRUE))
+  observeEvent(input$ext_val_filter2_remove, ext_val_filter2_open(FALSE))
+
+  output$ext_val_filter2_ui <- renderUI({
+    req(rv$ext_val_metadata)
+    if (!isTRUE(ext_val_filter2_open())) {
+      return(tags$div(style = "margin-top: 8px;",
+        actionButton("ext_val_filter2_add", tagList(icon("plus"), " Add second filter (optional)"),
+                     class = "btn-default btn-sm"),
+        tags$span(" e.g. keep only peripheral blood samples", style = "font-size: 12px; color: #6c757d; margin-left: 6px;")))
+    }
+    cols <- gexp_phenotype_column_choices(colnames(rv$ext_val_metadata))
+    tags$div(
+      style = "margin-top: 12px; padding: 12px; background: #fff8e6; border-radius: 6px; border: 1px solid #ffd98a;",
+      tags$div(style = "display: flex; justify-content: space-between; align-items: center;",
+        tags$strong(icon("filter"), " Second filter (optional)"),
+        actionButton("ext_val_filter2_remove", tagList(icon("times"), " Remove filter"), class = "btn-link btn-sm")),
+      tags$p("Choose a column, then untick the values you want to skip. Only samples with a ticked value are kept.",
+             style = "font-size: 12px; color: #6c757d; margin: 6px 0;"),
+      selectInput("ext_val_filter2_col", "Filter column:",
+                  choices = c("Select a column..." = "", cols), width = "100%"),
+      uiOutput("ext_val_filter2_vals_ui")
+    )
+  })
+
+  output$ext_val_filter2_vals_ui <- renderUI({
+    req(rv$ext_val_metadata, isTRUE(ext_val_filter2_open()))
+    fcol <- input$ext_val_filter2_col
+    if (is.null(fcol) || !nzchar(fcol) || !fcol %in% colnames(rv$ext_val_metadata)) return(NULL)
+    fv <- trimws(as.character(rv$ext_val_metadata[[fcol]]))
+    fv[is.na(fv) | fv == ""] <- "(blank)"   # empty values must be tickable, e.g. controls with no stage
+    tab <- table(fv)
+    checkboxGroupInput("ext_val_filter2_keep", "Keep samples with:",
+      choiceNames = paste0(names(tab), " (", as.integer(tab), ")"),
+      choiceValues = names(tab), selected = names(tab))
+  })
+
+  ext_val_manual <- reactiveVal(character(0))
+  observeEvent(rv$ext_val_metadata, ext_val_manual(character(0)), ignoreNULL = FALSE)
+  .ext_val_table_df <- function(meta, lab) {
+    a <- unname(lab[rownames(meta)]); a[is.na(a)] <- ""
+    data.frame(Assigned = a, meta, check.names = FALSE, stringsAsFactors = FALSE, row.names = rownames(meta))
+  }
+
   output$ext_val_phenodata_table <- DT::renderDataTable({
     req(rv$ext_val_metadata)
+    manual <- identical(input$ext_val_group_mode, "manual")
     meta <- rv$ext_val_metadata
+    if (manual) meta <- .ext_val_table_df(meta, shiny::isolate(ext_val_manual()))
     DT::datatable(
       meta,
       options = list(
@@ -640,7 +823,46 @@ server_validation <- function(input, output, session, rv) {
       class = "display compact stripe hover",
       filter = "top",
       rownames = TRUE,
-      selection = "none"
+      selection = if (manual) list(mode = "multiple", target = "row") else "none"
+    )
+  })
+
+  ext_val_dt_proxy <- DT::dataTableProxy("ext_val_phenodata_table")
+  observeEvent(ext_val_manual(), {
+    if (identical(input$ext_val_group_mode, "manual") && !is.null(rv$ext_val_metadata)) {
+      DT::replaceData(ext_val_dt_proxy, .ext_val_table_df(rv$ext_val_metadata, ext_val_manual()),
+                      resetPaging = FALSE, rownames = TRUE)
+    }
+  }, ignoreInit = TRUE)
+
+  .ext_val_assign <- function(label) {
+    idx <- input$ext_val_phenodata_table_rows_selected
+    if (length(idx) == 0L) {
+      showNotification("Tick one or more rows in the phenodata table first.", type = "warning", duration = 4)
+      return(invisible(NULL))
+    }
+    ids <- rownames(rv$ext_val_metadata)[idx]
+    lab <- ext_val_manual()
+    if (is.na(label)) lab <- lab[setdiff(names(lab), ids)] else lab[ids] <- label
+    ext_val_manual(lab)
+    DT::selectRows(ext_val_dt_proxy, NULL)
+  }
+  observeEvent(input$ext_val_manual_normal, .ext_val_assign("Normal"))
+  observeEvent(input$ext_val_manual_disease, .ext_val_assign("Disease"))
+  observeEvent(input$ext_val_manual_clear, .ext_val_assign(NA_character_))
+  observeEvent(input$ext_val_manual_clear_all, ext_val_manual(character(0)))
+  observeEvent(input$ext_val_manual_select_filtered,
+               DT::selectRows(ext_val_dt_proxy, input$ext_val_phenodata_table_rows_all))
+
+  output$ext_val_manual_summary_ui <- renderUI({
+    lab <- ext_val_manual()
+    n_n <- sum(lab == "Normal"); n_d <- sum(lab == "Disease")
+    tags$div(
+      tags$span(class = "badge", style = "background:#2ecc71; font-size:13px; padding:6px 12px; margin-right:8px;", paste0("Normal: ", n_n)),
+      tags$span(class = "badge", style = "background:#e74c3c; font-size:13px; padding:6px 12px; margin-right:8px;", paste0("Disease: ", n_d)),
+      tags$span(class = "badge", style = "background:#7f8c8d; font-size:13px; padding:6px 12px;",
+                paste0("Unassigned (excluded): ", nrow(rv$ext_val_metadata) - n_n - n_d)),
+      if (n_n < 2L || n_d < 2L) tags$p("Need at least 2 samples in each group.", style = "color:#d35400; font-size:12px; margin:6px 0 0 0;")
     )
   })
 
@@ -697,6 +919,68 @@ server_validation <- function(input, output, session, rv) {
   })
 
   # ============================================================================
+  # STEP B2: Batch correction (same logic as main analysis Step 5)
+  # ============================================================================
+  # Multi-dataset: real between-study batch correction, auto-picked the same
+  # way as Step 5's recommendation (ComBat-ref, or limma if Dataset and
+  # Condition look confounded). Single dataset: no between-study batch to
+  # remove, but expose the same technical-covariate option Step 5 offers -
+  # extraction date / lane / processing day from that GSE's own phenodata.
+  ext_val_batch_covariate_choices <- reactive({
+    meta <- rv$ext_val_metadata
+    if (is.null(meta) || nrow(meta) < 3L) return(character(0))
+    reserved <- c("sampleid", "dataset", "condition", "platform", "batch", "title", "geo_accession")
+    cn <- colnames(meta)
+    cn <- cn[!tolower(cn) %in% reserved]
+    keep <- vapply(cn, function(col) {
+      v <- as.character(meta[[col]])
+      v <- v[!is.na(v) & nzchar(trimws(v))]
+      n_levels <- length(unique(v))
+      length(v) >= 2L && n_levels >= 2L && n_levels <= (nrow(meta) - 1L)
+    }, logical(1))
+    cn[keep]
+  })
+
+  output$ext_val_batch_ui <- renderUI({
+    if (!isTRUE(rv$ext_val_downloaded) || is.null(rv$ext_val_metadata)) return(NULL)
+    meta <- rv$ext_val_metadata
+    n_ds <- if ("Dataset" %in% colnames(meta)) length(unique(as.character(meta$Dataset))) else 1L
+    tagList(
+      tags$hr(),
+      tags$h4(icon("filter"), " Step B2: Gene Filtering & Batch Correction (same as main analysis Step 5)", style = "color: #d35400; margin-bottom: 10px;"),
+      tags$div(
+        style = "margin-bottom: 12px;",
+        tags$label(tags$strong("Variance Percentile Cutoff:"), style = "font-size: 14px; color: #2c3e50;"),
+        tags$p("Remove the lowest-variance genes before DE - same filter and same default as Step 5. Set this to match the value you used for training if you want the two gene sets to align.",
+               style = "color: #6c757d; font-size: 12px; margin-bottom: 8px;"),
+        sliderInput("ext_val_variance_percentile", label = NULL, min = 0, max = 50, value = 25, step = 1, post = "%", width = "100%")
+      ),
+      if (n_ds >= 2L) {
+        tags$div(
+          class = "alert alert-info", style = "font-size: 13px;",
+          icon("magic"),
+          tags$strong(paste0(" ", n_ds, " validation datasets detected.")),
+          " Batch correction will run automatically before DE (ComBat-ref, or limma if Dataset and Condition look confounded) - same auto-selection as the main analysis."
+        )
+      } else {
+        tagList(
+          tags$div(
+            class = "alert alert-secondary", style = "font-size: 13px; background: #f1f1f1;",
+            icon("info-circle"),
+            " Single validation dataset: no between-study batch to remove. A single dataset can still have a technical batch effect from sample processing - optionally correct for one below."
+          ),
+          selectInput(
+            "ext_val_batch_covariate",
+            "Technical covariate to correct for (optional):",
+            choices = c("(none - skip)" = "", ext_val_batch_covariate_choices()),
+            selected = "", width = "100%"
+          )
+        )
+      }
+    )
+  })
+
+  # ============================================================================
   # STEP C: Run validation button
   # ============================================================================
   output$ext_val_run_ui <- renderUI({
@@ -704,6 +988,22 @@ server_validation <- function(input, output, session, rv) {
     tagList(
       tags$hr(),
       tags$h4(icon("play-circle"), " Step C: Categorize Groups & Run DE", style = "color: #27ae60; margin-bottom: 10px;"),
+      fluidRow(
+        column(3, numericInput("ext_val_logfc_cutoff", tags$span("LogFC cutoff:",
+          tags$i(class = "fa fa-question-circle param-help",
+                 `data-toggle` = "tooltip", `data-placement` = "top",
+                 title = "Log2 fold-change threshold for the validation-set DE. Genes with |log2FC| above this value are considered differentially expressed.<br><b>0.5</b> = mild (1.4-fold), <b>1.0</b> = strong (2-fold). Range 0-2.")),
+          0.5, min = 0, max = 2, step = 0.1)),
+        column(3, numericInput("ext_val_padj_cutoff", tags$span("Adj. P-value:",
+          tags$i(class = "fa fa-question-circle param-help",
+                 `data-toggle` = "tooltip", `data-placement` = "top",
+                 title = "Benjamini-Hochberg adjusted p-value cutoff for the validation-set DE.<br><b>0.05</b> = standard (5% FDR), <b>0.01</b> = stringent.")),
+          0.05, step = 0.01)),
+        column(6,
+          tags$p("Thresholds applied to the validation dataset's own DE run (independent of Step 6's thresholds).",
+                 style = "font-size: 12px; color: #6c757d; margin-top: 28px;")
+        )
+      ),
       fluidRow(
         column(6,
           actionButton("ext_val_run_btn",
@@ -722,13 +1022,30 @@ server_validation <- function(input, output, session, rv) {
   # Run handler: categorize -> DE
   # ============================================================================
   observeEvent(input$ext_val_run_btn, {
-    req(rv$ext_val_raw_expr, rv$ext_val_metadata, input$ext_val_group_col)
-    col <- input$ext_val_group_col
+    req(rv$ext_val_raw_expr, rv$ext_val_metadata)
+    manual_mode <- identical(input$ext_val_group_mode, "manual")
     meta <- rv$ext_val_metadata
-    if (!col %in% colnames(meta)) {
-      showNotification("Selected column not found.", type = "error", duration = 5); return()
+    if (!manual_mode) {
+      req(input$ext_val_group_col)
+      col <- input$ext_val_group_col
+      if (!col %in% colnames(meta)) {
+        showNotification("Selected column not found.", type = "error", duration = 5); return()
+      }
+    } else {
+      col <- "Manual selection"
     }
 
+    if (manual_mode) {
+      man_lab <- ext_val_manual()
+      lab_s <- unname(man_lab[rownames(meta)])
+      outcome <- ifelse(lab_s %in% "Normal", 0L, ifelse(lab_s %in% "Disease", 1L, NA_integer_))
+      normal_vals <- paste0(sum(outcome == 0L, na.rm = TRUE), " manually selected samples")
+      disease_vals <- paste0(sum(outcome == 1L, na.rm = TRUE), " manually selected samples")
+      if (sum(outcome == 0L, na.rm = TRUE) == 0L || sum(outcome == 1L, na.rm = TRUE) == 0L) {
+        showNotification("Manual selection: assign at least one Normal and one Disease sample (tick rows, then use the Assign buttons).",
+                         type = "error", duration = 7); return()
+      }
+    } else {
     vals <- as.character(trimws(meta[[col]]))
     vals[vals == ""] <- NA
     u <- unique(vals[!is.na(vals)])
@@ -753,8 +1070,34 @@ server_validation <- function(input, output, session, rv) {
     outcome <- rep(NA_integer_, length(vals))
     outcome[vals %in% normal_vals] <- 0L
     outcome[vals %in% disease_vals] <- 1L
+    }
 
     valid <- !is.na(outcome)
+
+    fcol <- input$ext_val_filter2_col
+    if (!manual_mode && isTRUE(ext_val_filter2_open()) && !is.null(fcol) && nzchar(fcol) && fcol %in% colnames(meta)) {
+      keep_vals <- input$ext_val_filter2_keep
+      if (length(keep_vals) == 0L) {
+        showNotification("Second filter: tick at least one value to keep (or remove the filter).", type = "error", duration = 6); return()
+      }
+      f_vals <- trimws(as.character(meta[[fcol]]))
+      f_vals[is.na(f_vals) | f_vals == ""] <- "(blank)"
+      n_before_f <- sum(valid)
+      valid_before_f <- valid
+      valid <- valid & (f_vals %in% keep_vals)
+      lost_class <- c(Normal = sum(valid_before_f & outcome == 0L, na.rm = TRUE) > 0 && sum(valid & outcome == 0L, na.rm = TRUE) == 0,
+                      Disease = sum(valid_before_f & outcome == 1L, na.rm = TRUE) > 0 && sum(valid & outcome == 1L, na.rm = TRUE) == 0)
+      if (any(lost_class)) {
+        showNotification(
+          paste0("The second filter on '", fcol, "' removes ALL ", paste(names(lost_class)[lost_class], collapse = " and "),
+                 " samples. If those samples have an empty value in this column, tick \"(blank)\" in the filter."),
+          type = "error", duration = 12)
+        return()
+      }
+      showNotification(
+        paste0("Second filter on '", fcol, "': kept ", sum(valid), " of ", n_before_f, " categorized samples."),
+        type = "message", duration = 6)
+    }
     ext_expr_t <- t(rv$ext_val_raw_expr)[valid, , drop = FALSE]
     outcome <- outcome[valid]
 
@@ -778,49 +1121,126 @@ server_validation <- function(input, output, session, rv) {
     n_excluded <- sum(!valid)
 
     # ==================================================================
-    # Run DE analysis (limma) on validation data
+    # Run DE analysis on validation data (method chosen in Step A)
     # ==================================================================
+    padj_cut <- if (!is.null(input$ext_val_padj_cutoff) && !is.na(input$ext_val_padj_cutoff)) {
+      input$ext_val_padj_cutoff
+    } else {
+      0.05
+    }
+    logfc_cut <- if (!is.null(input$ext_val_logfc_cutoff) && !is.na(input$ext_val_logfc_cutoff)) {
+      input$ext_val_logfc_cutoff
+    } else {
+      0.5
+    }
+    chosen_method <- if (!is.null(input$ext_val_de_method) && nzchar(input$ext_val_de_method)) {
+      input$ext_val_de_method
+    } else {
+      "limma"
+    }
+    # Metadata for this DE run: same shape as the main analysis's
+    # unified_metadata (Dataset + Condition [+ Platform]), so the shared
+    # batch/DE functions can do Dataset-aware covariate handling exactly
+    # like the training-data pipeline.
+    val_meta <- rv$ext_val_metadata[valid, , drop = FALSE]
+    val_meta$Condition <- factor(ifelse(outcome == 0, "Normal", "Disease"), levels = c("Normal", "Disease"))
+    if (!"Dataset" %in% colnames(val_meta)) val_meta$Dataset <- "GSE_val"
+    rownames(val_meta) <- rownames(ext_expr_t)
+    expr_gxs <- t(ext_expr_t) # genes x samples, aligned to val_meta rownames
+
+    counts_raw_full <- rv$ext_val_counts_for_deseq2
+    counts_raw <- NULL
+    is_count_matrix <- FALSE
+    if (!is.null(counts_raw_full) && identical(input$ext_val_platform, "rnaseq")) {
+      common_samp <- intersect(colnames(counts_raw_full), rownames(val_meta))
+      if (length(common_samp) >= 4L) {
+        counts_raw <- counts_raw_full[, common_samp, drop = FALSE]
+        is_count_matrix <- !.gexpipe_matrix_has_negative(counts_raw) &&
+          isTRUE(all.equal(counts_raw, round(counts_raw), check.attributes = FALSE))
+      }
+    }
+    use_count_method <- chosen_method %in% c("deseq2", "edger") && is_count_matrix
+
     tryCatch({
       withProgress(message = "Running DE on validation data...", value = 0, {
-        val_expr <- rv$ext_val_raw_expr[, valid, drop = FALSE]
+        # ---- Gene filtering (same variance-percentile filter as Step 5) ----
+        # Applied to the continuous/normalized matrix only, not to raw counts -
+        # exactly like the main analysis (DESeq2/edgeR keep raw counts as-is;
+        # Step 5's variance filter only ever touches the normalized matrix).
+        var_pct_val <- if (!is.null(input$ext_val_variance_percentile)) input$ext_val_variance_percentile else 25
+        n_genes_before_var <- nrow(expr_gxs)
+        expr_gxs <- .gexpipe_filter_var_block(expr_gxs, var_pct_val)
+        batch_note <- paste0("Gene filter: ", var_pct_val, "th percentile (", n_genes_before_var, " -> ", nrow(expr_gxs), " genes)")
 
-        max_val <- max(val_expr, na.rm = TRUE)
-        if (max_val > 50) {
-          min_val <- min(val_expr, na.rm = TRUE)
-          if (min_val < 0) val_expr <- val_expr - min_val + 1
-          val_expr <- log2(val_expr + 1)
+        # ---- Batch correction (same approach as main analysis Step 5) ----
+        n_ds_val <- length(unique(as.character(val_meta$Dataset)))
+        if (n_ds_val >= 2L) {
+          incProgress(0.15, detail = "Batch correction (multi-dataset)...")
+          conf <- tryCatch(gexpipe_batch_confounding_summary(val_meta), error = function(e) list(confounded = FALSE))
+          batch_method_val <- if (isTRUE(conf$confounded)) "limma" else "combat_ref"
+          bc <- tryCatch(
+            gexp_batch_correct(expr_gxs, val_meta, variance_percentile = 0, method = batch_method_val),
+            error = function(e) NULL
+          )
+          if (!is.null(bc) && !is.null(bc$batch_corrected)) {
+            expr_gxs <- bc$batch_corrected
+            batch_note <- paste0(batch_note, " | Batch correction: ", batch_method_val, " (", n_ds_val, " datasets)")
+          }
+        } else if (!is.null(input$ext_val_batch_covariate) && nzchar(input$ext_val_batch_covariate) &&
+                   input$ext_val_batch_covariate %in% colnames(val_meta)) {
+          cov <- input$ext_val_batch_covariate
+          tech_batch <- factor(as.character(val_meta[[cov]]))
+          if (length(levels(tech_batch)) >= 2L) {
+            mod <- gexpipe_build_batch_mod(val_meta)
+            corrected <- tryCatch(
+              limma::removeBatchEffect(expr_gxs, batch = tech_batch, design = mod),
+              error = function(e) NULL
+            )
+            if (!is.null(corrected)) {
+              expr_gxs <- corrected
+              batch_note <- paste0(batch_note, " | Batch correction: limma removeBatchEffect ('", cov, "')")
+            }
+          }
         }
-        val_expr <- limma::normalizeBetweenArrays(val_expr, method = "quantile")
 
-        incProgress(0.3, detail = "Building design matrix...")
-
-        condition <- factor(ifelse(outcome == 0, "Normal", "Disease"),
-                            levels = c("Normal", "Disease"))
-        design <- model.matrix(~ 0 + condition)
-        colnames(design) <- levels(condition)
-
-        contrast <- limma::makeContrasts(Disease - Normal, levels = design)
-
-        incProgress(0.3, detail = "Fitting model...")
-
-        fit <- limma::lmFit(val_expr, design)
-        fit2 <- limma::contrasts.fit(fit, contrast)
-        fit2 <- limma::eBayes(fit2)
-
-        de_res <- limma::topTable(fit2, number = Inf, adjust.method = "BH")
-        de_res$Gene <- rownames(de_res)
-        de_res <- de_res[, c("Gene", "logFC", "AveExpr", "P.Value", "adj.P.Val")]
-
-        padj_cut <- 0.05
-        logfc_cut <- 0.5
-        de_res$Significance <- "Not Significant"
-        de_res$Significance[de_res$adj.P.Val < padj_cut & de_res$logFC > logfc_cut] <- "Up-regulated"
-        de_res$Significance[de_res$adj.P.Val < padj_cut & de_res$logFC < -logfc_cut] <- "Down-regulated"
+        if (isTRUE(use_count_method)) {
+          incProgress(0.3, detail = paste0("Fitting ", chosen_method, " model on raw counts..."))
+          count_meta <- val_meta[colnames(counts_raw), , drop = FALSE]
+          storage.mode(counts_raw) <- "integer"
+          out <- gexpipe_run_count_de(
+            counts_raw, count_meta,
+            method = chosen_method,
+            logfc_cutoff = logfc_cut, padj_cutoff = padj_cut,
+            ref_lab = "Normal", alt_lab = "Disease"
+          )
+          de_res <- out$de_results
+          incProgress(0.4, detail = "DE complete!")
+        } else {
+          if (chosen_method %in% c("deseq2", "edger")) {
+            showNotification(
+              tags$div(icon("info-circle"), tags$strong(" Using limma instead of "), chosen_method,
+                       ". DESeq2/edgeR need raw RNA-seq counts (Platform Type = RNA-seq); this dataset ",
+                       "is microarray, merged, or not an integer count matrix."),
+              type = "warning", duration = 10
+            )
+          }
+          # Same shared limma engine as the main analysis (Dataset-aware
+          # design when 2+ datasets, independent filtering fixed for
+          # continuous/normalized data, same significance classification).
+          incProgress(0.3, detail = "Fitting limma model (same pipeline as training data)...")
+          out <- gexpipe_run_limma_on_subset(
+            expr_gxs, val_meta,
+            logfc_cutoff = logfc_cut, padj_cutoff = padj_cut,
+            ref_lab = "Normal", alt_lab = "Disease"
+          )
+          de_res <- out$de_results
+          incProgress(0.3, detail = "DE complete!")
+        }
 
         rv$ext_val_de_results <- de_res
         rv$ext_val_sig_genes <- de_res[de_res$Significance != "Not Significant", ]
-
-        incProgress(0.4, detail = "DE complete!")
+        rv$ext_val_de_method_used <- if (isTRUE(use_count_method)) chosen_method else "limma"
+        rv$ext_val_batch_note <- batch_note
       })
     }, error = function(e) {
       showNotification(
@@ -842,6 +1262,9 @@ server_validation <- function(input, output, session, rv) {
                                 "). ML gene overlap: ", n_overlap, "/", length(rv$ml_common_genes))),
                if (n_degs > 0) tags$span(tags$br(), paste0("Validation DE: ", n_degs, " DEGs found."),
                                           style = "color: #27ae60; font-weight: bold;"),
+               if (!is.null(rv$ext_val_batch_note) && nzchar(rv$ext_val_batch_note)) {
+                 tags$span(tags$br(), trimws(sub("^\\|", "", rv$ext_val_batch_note)), style = "color: #d35400; font-size: 12px;")
+               },
                tags$br(),
                tags$span(paste0("Normal = [", paste(normal_vals, collapse = ", "), "]  |  Disease = [", paste(disease_vals, collapse = ", "), "]"),
                          style = "font-size: 12px; color: #6c757d;")),
@@ -869,6 +1292,8 @@ server_validation <- function(input, output, session, rv) {
     rv$nomogram_ext_val_data <- NULL
     rv$nomogram_ext_val_metrics <- NULL
     rv$nomogram_ext_val_roc <- NULL
+    rv$ext_val_counts_for_deseq2 <- NULL
+    rv$ext_val_batch_note <- NULL
     showNotification("External validation data cleared.", type = "message", duration = 3)
   })
 
@@ -933,12 +1358,23 @@ server_validation <- function(input, output, session, rv) {
     n_sig <- if (!is.null(sig)) nrow(sig) else 0
     n_up <- sum(de$Significance == "Up-regulated", na.rm = TRUE)
     n_down <- sum(de$Significance == "Down-regulated", na.rm = TRUE)
+    used_logfc <- if (!is.null(input$ext_val_logfc_cutoff) && !is.na(input$ext_val_logfc_cutoff)) {
+      input$ext_val_logfc_cutoff
+    } else {
+      0.5
+    }
+    used_padj <- if (!is.null(input$ext_val_padj_cutoff) && !is.na(input$ext_val_padj_cutoff)) {
+      input$ext_val_padj_cutoff
+    } else {
+      0.05
+    }
 
     tagList(
       fluidRow(
         box(
           title = tags$span(icon("dna"), " Validation DE Results",
-                            tags$span("LIMMA", class = "label label-info",
+                            tags$span(toupper(if (!is.null(rv$ext_val_de_method_used)) rv$ext_val_de_method_used else "limma"),
+                                      class = "label label-info",
                                       style = "margin-left: 8px; font-size: 11px;")),
           width = 12, status = "info", solidHeader = TRUE, collapsible = TRUE, collapsed = FALSE,
 
@@ -956,7 +1392,7 @@ server_validation <- function(input, output, session, rv) {
                 style = "text-align: center; padding: 15px; background: linear-gradient(135deg, #e74c3c, #c0392b); border-radius: 10px; color: white; margin-bottom: 10px;",
                 tags$h4(icon("arrow-up"), tags$strong("Up-regulated"), style = "margin: 0;"),
                 tags$h2(n_up, style = "margin: 5px 0;"),
-                tags$small("adj.P < 0.05, logFC > 0.5")
+                tags$small(paste0("adj.P < ", used_padj, ", logFC > ", used_logfc))
               )
             ),
             column(4,
@@ -964,7 +1400,7 @@ server_validation <- function(input, output, session, rv) {
                 style = "text-align: center; padding: 15px; background: linear-gradient(135deg, #3498db, #2980b9); border-radius: 10px; color: white; margin-bottom: 10px;",
                 tags$h4(icon("arrow-down"), tags$strong("Down-regulated"), style = "margin: 0;"),
                 tags$h2(n_down, style = "margin: 5px 0;"),
-                tags$small("adj.P < 0.05, logFC < -0.5")
+                tags$small(paste0("adj.P < ", used_padj, ", logFC < -", used_logfc))
               )
             )
           ),

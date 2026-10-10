@@ -83,19 +83,6 @@ ui_qc <- tabItem(
             width = 12, status = "info", solidHeader = TRUE,
             plotOutput("qc_density_rna", height = "280px"),
             gexp_ui_plot_download_bar("download_qc_density_rna_png", "download_qc_density_rna_jpg", "download_qc_density_rna_pdf", "btn-info btn-xs")
-          ),
-          box(
-            title = tags$span(icon("chart-area"), " RNA-seq outlier plots (PCA and connectivity)"),
-            width = 12, status = "danger", solidHeader = TRUE,
-            plotOutput("qc_pca_outlier_plot_rna", height = "380px"),
-            gexp_ui_plot_download_bar("dl_qc_pca_plot_rna_png", "dl_qc_pca_plot_rna_jpg", "dl_qc_pca_plot_rna_pdf", "btn-danger btn-xs"),
-            plotOutput("qc_connectivity_plot_rna", height = "380px"),
-            gexp_ui_plot_download_bar("dl_qc_conn_plot_rna_png", "dl_qc_conn_plot_rna_jpg", "dl_qc_conn_plot_rna_pdf", "btn-danger btn-xs")
-          ),
-          box(
-            title = tags$span(icon("table"), " RNA-seq outliers"),
-            width = 12, status = "danger", solidHeader = TRUE,
-            DT::DTOutput("qc_outlier_table_rna")
           )
         ),
         tagList(
@@ -110,49 +97,43 @@ ui_qc <- tabItem(
             width = 12, status = "warning", solidHeader = TRUE,
             plotOutput("qc_density_micro", height = "280px"),
             gexp_ui_plot_download_bar("download_qc_density_micro_png", "download_qc_density_micro_jpg", "download_qc_density_micro_pdf", "btn-warning btn-xs")
-          ),
-          box(
-            title = tags$span(icon("chart-area"), " Microarray outlier plots (PCA and connectivity)"),
-            width = 12, status = "danger", solidHeader = TRUE,
-            plotOutput("qc_pca_outlier_plot_micro", height = "380px"),
-            gexp_ui_plot_download_bar("dl_qc_pca_plot_micro_png", "dl_qc_pca_plot_micro_jpg", "dl_qc_pca_plot_micro_pdf", "btn-danger btn-xs"),
-            plotOutput("qc_connectivity_plot_micro", height = "380px"),
-            gexp_ui_plot_download_bar("dl_qc_conn_plot_micro_png", "dl_qc_conn_plot_micro_jpg", "dl_qc_conn_plot_micro_pdf", "btn-danger btn-xs")
-          ),
-          box(
-            title = tags$span(icon("table"), " Microarray outliers"),
-            width = 12, status = "danger", solidHeader = TRUE,
-            DT::DTOutput("qc_outlier_table_micro")
           )
         )
       ),
-      fluidRow(
-        box(
-          title = tags$span(icon("info-circle"), " Common genes per platform (RNA-seq and microarray separately)"),
-          width = 12, status = "primary", solidHeader = TRUE, collapsible = TRUE, collapsed = FALSE,
-          tags$p(
-            "Gene-symbol overlap is shown separately for the RNA-seq datasets (left) and the microarray datasets (right). RNA-seq and microarray are never merged in Parallel mode.",
-            style = "font-size: 13px; color: #555; margin-bottom: 10px;"
+      # One box per platform (same two-column layout and colours as the
+      # boxplot/density boxes above) so RNA-seq and microarray never read as
+      # one merged block.
+      gexp_ui_parallel_two_col(
+        tagList(
+          box(
+            title = tags$span(icon("dna"), " RNA-seq: common genes across RNA-seq datasets"),
+            width = 12, status = "info", solidHeader = TRUE, collapsible = TRUE,
+            uiOutput("common_genes_summary_rna"),
+            tags$h5(tags$strong("Venn diagram"), style = "margin-top: 12px;"),
+            plotOutput("venn_plot_rna", height = "380px"),
+            gexp_ui_plot_download_bar("download_venn_plot_rna_png", "download_venn_plot_rna_jpg", "download_venn_plot_rna_pdf", "btn-info btn-xs")
           ),
-          fluidRow(
-        column(6,
-          tags$h4(icon("dna"), " RNA-seq: common genes across RNA-seq datasets", style = "margin-top: 0;"),
-          uiOutput("common_genes_summary_rna"),
-          plotOutput("venn_plot_rna", height = "380px"),
-          gexp_ui_plot_download_bar("download_venn_plot_rna_png", "download_venn_plot_rna_jpg", "download_venn_plot_rna_pdf", "btn-default btn-xs"),
-          tags$hr(),
-          plotOutput("upset_plot_rna", height = "380px"),
-          gexp_ui_plot_download_bar("download_upset_plot_rna_png", "download_upset_plot_rna_jpg", "download_upset_plot_rna_pdf", "btn-default btn-xs")
+          box(
+            title = tags$span(icon("chart-bar"), " RNA-seq: UpSet plot"),
+            width = 12, status = "info", solidHeader = TRUE, collapsible = TRUE,
+            plotOutput("upset_plot_rna", height = "380px"),
+            gexp_ui_plot_download_bar("download_upset_plot_rna_png", "download_upset_plot_rna_jpg", "download_upset_plot_rna_pdf", "btn-info btn-xs")
+          )
         ),
-        column(6,
-          tags$h4(icon("th"), " Microarray: common genes across Microarray datasets", style = "margin-top: 0;"),
-          uiOutput("common_genes_summary_micro"),
-          plotOutput("venn_plot_micro", height = "380px"),
-          gexp_ui_plot_download_bar("download_venn_plot_micro_png", "download_venn_plot_micro_jpg", "download_venn_plot_micro_pdf", "btn-default btn-xs"),
-          tags$hr(),
-          plotOutput("upset_plot_micro", height = "380px"),
-          gexp_ui_plot_download_bar("download_upset_plot_micro_png", "download_upset_plot_micro_jpg", "download_upset_plot_micro_pdf", "btn-default btn-xs")
-        )
+        tagList(
+          box(
+            title = tags$span(icon("th"), " Microarray: common genes across microarray datasets"),
+            width = 12, status = "warning", solidHeader = TRUE, collapsible = TRUE,
+            uiOutput("common_genes_summary_micro"),
+            tags$h5(tags$strong("Venn diagram"), style = "margin-top: 12px;"),
+            plotOutput("venn_plot_micro", height = "380px"),
+            gexp_ui_plot_download_bar("download_venn_plot_micro_png", "download_venn_plot_micro_jpg", "download_venn_plot_micro_pdf", "btn-warning btn-xs")
+          ),
+          box(
+            title = tags$span(icon("chart-bar"), " Microarray: UpSet plot"),
+            width = 12, status = "warning", solidHeader = TRUE, collapsible = TRUE,
+            plotOutput("upset_plot_micro", height = "380px"),
+            gexp_ui_plot_download_bar("download_upset_plot_micro_png", "download_upset_plot_micro_jpg", "download_upset_plot_micro_pdf", "btn-warning btn-xs")
           )
         )
       )
@@ -168,14 +149,19 @@ ui_qc <- tabItem(
         tags$div(
           style = "padding: 10px 14px; background: linear-gradient(135deg, #fef9e7, #fdebd0); border-left: 4px solid #f39c12; border-radius: 4px; margin-bottom: 15px;",
           icon("lightbulb", style = "color: #f39c12; margin-right: 6px;"),
-          tags$strong("Detect and remove outlier samples after normalization. "),
-          tags$span("If samples are removed, GExPipe re-normalizes the remaining data and re-computes common genes.", style = "font-size: 13px;"),
+          tags$strong("Optional: flag possible outlier samples after normalization. "),
+          tags$span("Each GSE is tested on its own samples (this step is before batch correction, so a pooled test would mostly flag study differences). ",
+                    "Nothing is removed unless you tick it. If samples are removed, GExPipe re-normalizes the remaining data and re-computes common genes.",
+                    style = "font-size: 13px;"),
           tags$br(),
           tags$span(icon("chart-area", style = "margin-right: 4px;"), tags$strong("PCA + Mahalanobis distance:"),
-                    " Identifies samples far from the cluster center in PC1-PC2 space (97.5% chi-squared threshold).",
+                    " Identifies samples far from their GSE's center in PC1-PC2 space (97.5% chi-squared threshold).",
                     style = "font-size: 12px; display: block; margin-top: 4px;"),
           tags$span(icon("project-diagram", style = "margin-right: 4px;"), tags$strong("Sample connectivity (signed network):"),
-                    " Flags samples with low inter-sample correlation (mean - 2*SD threshold).",
+                    " Flags samples with low correlation to the rest of their GSE (z < -2, i.e. mean - 2*SD).",
+                    style = "font-size: 12px; display: block; margin-top: 2px;"),
+          tags$span(icon("lightbulb", style = "margin-right: 4px;"), tags$strong("Advice:"),
+                    " a flag is not proof of a bad sample. Strong disease samples often look 'different'. Exclude only clear technical failures (STRONG = both tests), and check that DE is similar with and without them.",
                     style = "font-size: 12px; display: block; margin-top: 2px;")
         ),
         uiOutput("qc_excluded_info_ui"),
